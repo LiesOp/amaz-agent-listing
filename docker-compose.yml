@@ -1,0 +1,27 @@
+services:
+  backend:
+    build:
+      context: .
+      dockerfile: Dockerfile
+    image: mult-agent-listing-backend:local
+    env_file:
+      - .env
+    environment:
+      APP_ENV: docker
+      APP_DEBUG: "false"
+      DATABASE_URL: sqlite+aiosqlite:////data/listing_agent.db
+      APP_DATA_DIR: /data
+    ports:
+      - "8000:8000"
+    restart: unless-stopped
+
+  frontend:
+    build:
+      context: ./frontend
+      dockerfile: Dockerfile
+    image: mult-agent-listing-frontend:local
+    depends_on:
+      - backend
+    ports:
+      - "5173:80"
+    restart: unless-stopped

@@ -17,7 +17,7 @@ FastAPI backend skeleton for the V1 Amazon listing copy Agent.
 python -m venv .venv
 .\.venv\Scripts\Activate.ps1
 python -m pip install -e ".[dev]"
-Copy-Item .env.example .env
+python scripts/init_db.py
 cd src
 python -m uvicorn listing_agent.main:app --host 0.0.0.0 --port 8000 --reload
 ```
