@@ -54,16 +54,6 @@ class _DescriptionHTMLParser(HTMLParser):
 
 ALLOWED_DESCRIPTION_TAGS = {"p", "b"}
 BLOCKED_DESCRIPTION_TAGS = {"script", "style", "iframe"}
-REQUIRED_DESCRIPTION_FRAGMENTS = (
-    "specification",
-    "brand",
-    "name",
-    "color",
-    "material",
-    "size",
-    "applicable",
-    "features",
-)
 
 
 def validate_against_policy_pack(
@@ -150,16 +140,6 @@ def _validate_description_html(value: Any, errors: list[ValidationIssue]) -> Non
                 "description_text",
                 "unsupported_html_tag",
                 f"Description contains unsupported HTML tags: {', '.join(unsupported)}.",
-            )
-        )
-    lowered = " ".join(parser.text_parts).lower()
-    missing = [fragment for fragment in REQUIRED_DESCRIPTION_FRAGMENTS if fragment not in lowered]
-    if missing:
-        errors.append(
-            _issue(
-                "description_text",
-                "missing_html_section",
-                "Description is missing required sections: " + ", ".join(missing) + ".",
             )
         )
     if "<p" not in value.lower() or "</p>" not in value.lower():

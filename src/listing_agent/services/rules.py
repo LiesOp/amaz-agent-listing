@@ -100,6 +100,7 @@ class RuleManagementService:
             "rule_category",
             "rule_title",
             "rule_content",
+            "rule_schema",
             "rule_scope",
             "rule_level",
             "priority",
@@ -112,8 +113,13 @@ class RuleManagementService:
 
         if not partial:
             values.setdefault("rule_scope", "amazon_listing")
-            values.setdefault("rule_level", "reference")
+            values.setdefault("rule_level", "guideline")
             values.setdefault("priority", 100)
             values.setdefault("is_active", True)
+        for field in ("source_note", "created_by", "updated_by"):
+            if values.get(field) == "":
+                values[field] = None
+        if values.get("rule_level") == "reference":
+            values["rule_level"] = "guideline"
 
         return values

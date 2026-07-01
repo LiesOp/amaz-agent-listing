@@ -25,6 +25,7 @@ def _to_rule_response(rule: Rule) -> RuleItemResponse:
         rule_category=rule.rule_category,
         rule_title=rule.rule_title,
         rule_content=rule.rule_content,
+        rule_schema=rule.rule_schema,
         rule_scope=rule.rule_scope,
         rule_level=rule.rule_level,
         priority=rule.priority,

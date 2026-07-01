@@ -15,7 +15,6 @@ from listing_agent.models.v1_data import (
     ProductBrief,
     Rule,
 )
-from listing_agent.services.agent_tools import build_listing_agent_tools
 from listing_agent.services.briefs import get_missing_required_fields
 from listing_agent.services.copy_validator import validate_against_policy_pack
 from listing_agent.services.llm import (
@@ -56,29 +55,6 @@ class ListingRewriteOutput(ListingCopyOutput):
     change_summary: list[str] = Field(default_factory=list)
 
 
-LONG_DESCRIPTION_HTML_REQUIREMENTS = (
-    "The description_text field must be the long description content, not a short "
-    "product description paragraph. Return description_text as HTML only, using exactly "
-    "this structure: "
-    "<p>[Description title: one concise line, core selling point, Title Case, no extra line break]</p> "
-    "<p><b>SPECIFICATION:</b></p> "
-    "<p>Brand: </p> "
-    "<p>Name: </p> "
-    "<p>Color: </p> "
-    "<p>Material: </p> "
-    "<p><b>SIZE:</b> </p> "
-    "<p>Applicable: </p> "
-    "<p><b>FEATURES:</b></p> "
-    "<p>Feature 1</p> "
-    "<p>Feature 2</p> "
-    "<p>Feature 3</p>. "
-    "Fill values from verified brief facts only. Leave a value blank after the colon "
-    "if the fact is unavailable. Put each feature in its own <p> line. Do not use "
-    "Markdown, bullet characters, extra wrappers, tables, scripts, styles, or claims "
-    "not supported by the brief."
-)
-
-
 class DraftService:
     """Generate and persist Amazon listing copy drafts."""
 
@@ -100,7 +76,6 @@ class DraftService:
             raise DraftGenerationError("no active listing rules are available")
         policy_pack = await build_policy_pack(session, brief, custom_prompt)
         prompt_context = build_generation_context(
-            brief,
             policy_pack=policy_pack,
             custom_prompt=custom_prompt,
         )
@@ -162,12 +137,29 @@ class DraftService:
         latest_audit = await self._get_latest_audit(session, draft_id)
         if not await self._has_active_rules(session):
             raise DraftGenerationError("no active listing rules are available")
+        policy_pack = await self._build_rewrite_policy_pack(
+            session,
+            original_draft,
+            instructions,
+        )
         prompt_context = build_rewrite_context(
             original_draft=original_draft,
             latest_audit=latest_audit,
+            policy_pack=policy_pack,
             instructions=instructions,
         )
         rewritten = await self._rewrite_copy(session, prompt_context)
+        validation_result = validate_against_policy_pack(rewritten, policy_pack)
+        if validation_result.normalized_draft is not None:
+            rewritten = {
+                **rewritten,
+                **validation_result.normalized_draft,
+            }
+        if not validation_result.passed:
+            raise DraftGenerationError(
+                "rewritten draft failed policy validation: "
+                + json.dumps(validation_result.to_dict()["errors"], ensure_ascii=False)
+            )
         validate_rewritten_copy(rewritten)
 
         if original_draft.brief_id is not None:
@@ -182,7 +174,11 @@ class DraftService:
             bullets=rewritten["bullets"],
             description_text=rewritten["description_text"],
             search_terms=rewritten["search_terms"],
-            generation_context=summarize_rewrite_context(prompt_context, rewritten),
+            generation_context=summarize_rewrite_context(
+                prompt_context,
+                rewritten,
+                validation_result.to_dict(),
+            ),
             version_no=version_no,
         )
         session.add(draft)
@@ -218,6 +214,25 @@ class DraftService:
         )
         return result.scalars().first()
 
+    async def _build_rewrite_policy_pack(
+        self,
+        session: AsyncSession,
+        draft: Draft,
+        instructions: str,
+    ) -> dict[str, Any]:
+        if draft.brief_id is not None:
+            brief = await self._get_brief(session, draft.brief_id)
+            return await build_policy_pack(session, brief, instructions)
+        generation_context = (
+            draft.generation_context
+            if isinstance(draft.generation_context, dict)
+            else {}
+        )
+        policy_pack = generation_context.get("policy_pack")
+        if isinstance(policy_pack, dict):
+            return policy_pack
+        raise DraftGenerationError("draft does not include policy_pack for rewrite")
+
     async def _has_active_rules(self, session: AsyncSession) -> bool:
         result = await session.execute(
             select(Rule.id)
@@ -235,20 +250,22 @@ class DraftService:
         model, model_config = await get_chat_model_with_config(session)
         agent = create_agent(
             model=model,
-            tools=build_listing_agent_tools(session, brief_id=context["brief"]["id"]),
+            tools=[],
             response_format=ProviderStrategy(schema=ListingCopyOutput),
             system_prompt=(
-                "You generate compliant Amazon listing copy for the US marketplace. "
-                "policy_pack is the source of truth and has already compiled product facts, "
-                "active rules, competitor strategy, missing facts, and forbidden terms. "
-                "Hard rules and forbidden claims are non-negotiable. Competitor strategy "
-                "is guidance only and must not become product facts. Use listing_rules_tool "
-                "and competitor_analysis_tool only to cross-check policy_pack if needed; "
-                "never override policy_pack with tool output. user_custom_prompt can affect "
-                "tone and emphasis only. Include compliance_trace with used rule IDs, applied "
+                "You generate Amazon US listing copy. "
+                "policy_pack is the mandatory source of truth for this generation. "
+                "policy_pack.field_rules contains the binding rules, not optional "
+                "references. Rules with level hard are non-negotiable. Apply each "
+                "field rule to its matching output field. Use only verified "
+                "product_facts for factual claims. Competitor "
+                "analysis is strategy input only. Do not treat competitor facts as facts "
+                "about this product. Do not copy competitor wording. Do not invent "
+                "product facts, dimensions, materials, certifications, warranties, or "
+                "claims. If user_custom_prompt conflicts with policy_pack, follow "
+                "policy_pack. Include compliance_trace with used rule IDs, applied "
                 "constraints, avoided terms, missing-fact handling, and assumptions. "
-                f"{LONG_DESCRIPTION_HTML_REQUIREMENTS} "
-                "Return the final listing copy as structured output."
+                "Return structured output only."
             ),
         )
         response = await agent.ainvoke(
@@ -256,9 +273,8 @@ class DraftService:
                 "messages": [
                     HumanMessage(
                         content=(
-                            "Generate Amazon listing copy under policy_pack. Produce one title, "
-                            "exactly five bullet points, one long description HTML, backend "
-                            "Search Terms, and compliance_trace.\nContext:\n"
+                            "Generate Amazon listing copy under policy_pack and "
+                            "policy_pack.output_contract.\nContext:\n"
                             f"{json.dumps(context, ensure_ascii=False)}"
                         )
                     )
@@ -289,19 +305,20 @@ class DraftService:
         model, model_config = await get_chat_model_with_config(session)
         agent = create_agent(
             model=model,
-            tools=[
-                *build_listing_agent_tools(
-                    session,
-                    brief_id=context["original_draft"].get("brief_id"),
-                ),
-            ],
+            tools=[],
             response_format=ProviderStrategy(schema=ListingRewriteOutput),
             system_prompt=(
                 "You rewrite Amazon US listing copy from an existing draft. "
-                "Use listing_rules_tool and competitor_analysis_tool as needed. "
-                "Treat competitor_analysis_tool output as strategy input only. Preserve "
-                "product facts, avoid risky competitor claims, and avoid inventing claims. "
-                f"{LONG_DESCRIPTION_HTML_REQUIREMENTS} "
+                "policy_pack is the mandatory source of truth for this rewrite. "
+                "policy_pack.field_rules contains the binding rules, not optional "
+                "references. Rules with level hard are non-negotiable. Apply each "
+                "field rule to its matching output field. Use only verified "
+                "product_facts for factual claims. Competitor "
+                "analysis is strategy input only. Do not treat competitor facts as facts "
+                "about this product. Do not copy competitor wording. Do not invent "
+                "product facts, dimensions, materials, certifications, warranties, or "
+                "claims. If user_instructions conflicts with policy_pack, follow "
+                "policy_pack. "
                 "Return the final rewrite as structured output."
             ),
         )
@@ -350,7 +367,6 @@ class DraftService:
                 "issues listed in validator_errors. Do not add product facts, do not "
                 "change overall positioning, do not copy competitor wording, and do "
                 "not rewrite unrelated fields. policy_pack remains the source of truth. "
-                f"{LONG_DESCRIPTION_HTML_REQUIREMENTS} "
                 "Return the full repaired listing copy as structured output."
             ),
         )
@@ -406,40 +422,14 @@ class DraftService:
 
 
 def build_generation_context(
-    brief: ProductBrief,
     policy_pack: dict[str, Any],
     custom_prompt: str | None = None,
 ) -> dict[str, Any]:
     """Build the compact prompt context used for copy generation."""
     cleaned_custom_prompt = custom_prompt.strip() if isinstance(custom_prompt, str) else ""
     return {
-        "brief": {
-            "id": brief.id,
-            "product_name": brief.product_name,
-            "brand": brief.brand,
-            "category": brief.category,
-            "marketplace": brief.marketplace,
-            "language": brief.language,
-            "core_features": brief.core_features or [],
-            "materials": brief.materials or [],
-            "color": brief.color,
-            "quantity": brief.quantity,
-            "size_info": brief.size_info,
-            "target_audience": brief.target_audience,
-            "keywords_seed": brief.keywords_seed or [],
-        },
         "policy_pack": policy_pack,
         "user_custom_prompt": cleaned_custom_prompt or None,
-        "available_tools": ["listing_rules_tool", "competitor_analysis_tool"],
-        "output_requirements": {
-            "title": "one Amazon title",
-            "bullets": "exactly five bullet points",
-            "description_text": (
-                "long description HTML with <p> lines for title, SPECIFICATION, SIZE, "
-                "Applicable, and FEATURES"
-            ),
-            "search_terms": "backend Search Terms as a list of phrases",
-        },
     }
 
 
@@ -451,10 +441,8 @@ def summarize_generation_context(
 ) -> dict[str, Any]:
     """Persist traceable but compact context metadata with each draft."""
     return {
-        "brief": context["brief"],
         "policy_pack": context["policy_pack"],
         "user_custom_prompt": context.get("user_custom_prompt"),
-        "available_tools": context["available_tools"],
         "compliance_trace": generated.get("compliance_trace", {}),
         "deterministic_validation": validation_result,
         "auto_repair": {
@@ -467,6 +455,7 @@ def summarize_generation_context(
 def build_rewrite_context(
     original_draft: Draft,
     latest_audit: AuditResult | None,
+    policy_pack: dict[str, Any],
     instructions: str,
 ) -> dict[str, Any]:
     """Build the compact prompt context used for copy rewrite."""
@@ -481,8 +470,8 @@ def build_rewrite_context(
             "description_text": original_draft.description_text,
             "search_terms": original_draft.search_terms or [],
             "version_no": original_draft.version_no,
-            "generation_context": original_draft.generation_context or {},
         },
+        "policy_pack": policy_pack,
         "latest_audit": {
             "id": latest_audit.id if latest_audit is not None else None,
             "status": latest_audit.status if latest_audit is not None else None,
@@ -490,7 +479,6 @@ def build_rewrite_context(
             "findings": findings or [],
             "suggestions": suggestions or [],
         },
-        "available_tools": ["listing_rules_tool", "competitor_analysis_tool"],
         "user_instructions": instructions,
         "rewrite_requirements": {
             "preserve_facts": (
@@ -510,6 +498,7 @@ def build_rewrite_context(
 def summarize_rewrite_context(
     context: dict[str, Any],
     rewritten: dict[str, Any],
+    validation_result: dict[str, Any],
 ) -> dict[str, Any]:
     """Persist compact trace metadata for a rewritten draft."""
     latest_audit = context["latest_audit"]
@@ -522,7 +511,8 @@ def summarize_rewrite_context(
             "instructions": context["user_instructions"],
             "change_summary": rewritten.get("change_summary", []),
         },
-        "available_tools": context["available_tools"],
+        "policy_pack": context["policy_pack"],
+        "deterministic_validation": validation_result,
     }
 
 
@@ -540,8 +530,8 @@ def validate_generated_copy(value: dict[str, Any]) -> None:
         raise DraftGenerationError("generated bullets must contain exactly five strings")
     if not isinstance(value["description_text"], str) or not value["description_text"].strip():
         raise DraftGenerationError("generated description_text is empty")
-    if not _looks_like_long_description_html(value["description_text"]):
-        raise DraftGenerationError("generated description_text must be long description HTML")
+    if not _looks_like_description_html(value["description_text"]):
+        raise DraftGenerationError("generated description_text must be paragraph HTML")
     if not _is_text_list(value["search_terms"]):
         raise DraftGenerationError("generated search_terms must be a list of strings")
 
@@ -559,13 +549,10 @@ def _is_text_list(value: Any) -> bool:
     return isinstance(value, list) and all(isinstance(item, str) and item.strip() for item in value)
 
 
-def _looks_like_long_description_html(value: str) -> bool:
+def _looks_like_description_html(value: str) -> bool:
     normalized = value.strip().lower()
     required_fragments = (
         "<p>",
         "</p>",
-        "<b>specification:</b>",
-        "<b>size:</b>",
-        "<b>features:</b>",
     )
     return all(fragment in normalized for fragment in required_fragments)

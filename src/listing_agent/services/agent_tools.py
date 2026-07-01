@@ -11,8 +11,6 @@ from listing_agent.models.v1_data import CompetitorAnalysis, CompetitorSummary, 
 class ListingRulesToolInput(BaseModel):
     """Input contract for querying listing rules from persistent storage."""
 
-    marketplace: str = Field(default="US")
-    category: str | None = None
     fields: list[str] = Field(default_factory=list)
     rule_levels: list[str] = Field(default_factory=list)
     max_rules: int = Field(default=20, ge=1, le=100)
@@ -40,14 +38,11 @@ def build_listing_agent_tools(
         "listing_rules_tool",
         args_schema=ListingRulesToolInput,
         description=(
-            "Query active Amazon listing rules by marketplace, category, field, "
-            "rule level, and usage purpose. Use this before generating, auditing, "
-            "or rewriting listing copy."
+            "Query active Amazon listing rules by field, rule level, and usage "
+            "purpose. Use this before generating, auditing, or rewriting listing copy."
         ),
     )
     async def listing_rules_tool(
-        marketplace: str = "US",
-        category: str | None = None,
         fields: list[str] | None = None,
         rule_levels: list[str] | None = None,
         max_rules: int = 20,
@@ -73,6 +68,7 @@ def build_listing_agent_tools(
                     "category": rule.rule_category,
                     "title": rule.rule_title,
                     "content": rule.rule_content,
+                    "schema": rule.rule_schema,
                     "level": rule.rule_level,
                     "priority": rule.priority,
                     "version_no": rule.version_no,
@@ -82,8 +78,6 @@ def build_listing_agent_tools(
             ],
             "rule_count": len(rules),
             "filters": {
-                "marketplace": marketplace,
-                "category": category,
                 "fields": requested_fields,
                 "rule_levels": requested_levels,
                 "purpose": purpose,

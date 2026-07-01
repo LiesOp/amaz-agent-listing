@@ -10,3 +10,5 @@ build/
 *.egg-info/
 frontend/node_modules/
 frontend/dist/
+AGENTS.md
+listing_agent.db

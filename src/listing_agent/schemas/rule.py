@@ -1,4 +1,5 @@
 from datetime import datetime
+from typing import Any
 
 from pydantic import BaseModel, Field
 
@@ -9,8 +10,9 @@ class RuleCreateRequest(BaseModel):
     rule_category: str = Field(min_length=1, max_length=64)
     rule_title: str = Field(min_length=1, max_length=255)
     rule_content: str = Field(min_length=1)
+    rule_schema: dict[str, Any] | None = None
     rule_scope: str = "amazon_listing"
-    rule_level: str = "reference"
+    rule_level: str = "guideline"
     priority: int = 100
     is_active: bool = True
     source_note: str | None = None
@@ -24,8 +26,9 @@ class RuleUpdateRequest(BaseModel):
     rule_category: str = Field(min_length=1, max_length=64)
     rule_title: str = Field(min_length=1, max_length=255)
     rule_content: str = Field(min_length=1)
+    rule_schema: dict[str, Any] | None = None
     rule_scope: str = "amazon_listing"
-    rule_level: str = "reference"
+    rule_level: str = "guideline"
     priority: int = 100
     is_active: bool = True
     source_note: str | None = None
@@ -46,6 +49,7 @@ class RuleItemResponse(BaseModel):
     rule_category: str
     rule_title: str
     rule_content: str
+    rule_schema: dict[str, Any] | None
     rule_scope: str
     rule_level: str
     priority: int

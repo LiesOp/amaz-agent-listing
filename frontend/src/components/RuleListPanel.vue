@@ -128,7 +128,7 @@
               <select v-model="form.rule_level" required>
                 <option value="hard">硬性规则</option>
                 <option value="soft">建议规则</option>
-                <option value="reference">参考规则</option>
+                <option value="guideline">参考规则</option>
               </select>
             </label>
             <label class="span-2">
@@ -138,6 +138,10 @@
             <label class="span-2">
               规则内容
               <textarea v-model.trim="form.rule_content" required rows="8" />
+            </label>
+            <label class="span-2">
+              rule_schema JSON
+              <textarea v-model.trim="ruleSchemaText" rows="6" />
             </label>
             <label>
               优先级
@@ -183,18 +187,19 @@ const rules = useRulesStore()
 
 const categoryOptions = [
   { value: 'title', label: '标题规则' },
-  { value: 'bullet', label: '五点描述规则' },
-  { value: 'description', label: '产品描述规则' },
+  { value: 'bullets', label: '五点描述规则' },
+  { value: 'description_text', label: '产品描述规则' },
   { value: 'search_terms', label: '搜索词规则' },
-  { value: 'compliance', label: '合规规则' },
-  { value: 'style', label: '风格规则' },
-  { value: 'fact_consistency', label: '事实一致性规则' },
+  { value: 'competitor_usage', label: '竞品使用规则' },
+  { value: 'output_contract', label: '输出契约规则' },
+  { value: 'global', label: '全局规则' },
 ]
 
 const form = reactive<RuleCreateRequest>({
   rule_category: 'title',
   rule_title: '',
   rule_content: '',
+  rule_schema: null,
   rule_scope: 'amazon_listing',
   rule_level: 'hard',
   priority: 100,
@@ -203,6 +208,7 @@ const form = reactive<RuleCreateRequest>({
 })
 const editingRuleId = ref<string | null>(null)
 const activeText = ref('true')
+const ruleSchemaText = ref('')
 const showRuleDialog = ref(false)
 
 const category = ref('')
@@ -215,12 +221,17 @@ const filterCategories = computed(() => {
 })
 
 const filterLevels = computed(() => {
-  return Array.from(new Set(['hard', 'soft', 'reference', ...rules.levels])).sort()
+  return Array.from(new Set(['hard', 'soft', 'guideline', ...rules.levels])).sort()
 })
 
 async function submitRule() {
+  const ruleSchema = parseRuleSchema()
+  if (ruleSchema === undefined) {
+    return
+  }
   const payload = {
     ...form,
+    rule_schema: ruleSchema,
     is_active: activeText.value === 'true',
   }
 
@@ -242,11 +253,13 @@ function openEditDialog(rule: RuleItemResponse) {
   form.rule_category = rule.rule_category
   form.rule_title = rule.rule_title
   form.rule_content = rule.rule_content
+  form.rule_schema = rule.rule_schema
   form.rule_scope = rule.rule_scope
   form.rule_level = rule.rule_level
   form.priority = rule.priority
   form.is_active = rule.is_active
   form.source_note = rule.source_note ?? ''
+  ruleSchemaText.value = formatRuleSchema(rule.rule_schema)
   activeText.value = String(rule.is_active)
   showRuleDialog.value = true
 }
@@ -261,12 +274,36 @@ function resetForm() {
   form.rule_category = 'title'
   form.rule_title = ''
   form.rule_content = ''
+  form.rule_schema = null
   form.rule_scope = 'amazon_listing'
   form.rule_level = 'hard'
   form.priority = 100
   form.is_active = true
   form.source_note = ''
+  ruleSchemaText.value = ''
   activeText.value = 'true'
+}
+
+function parseRuleSchema(): Record<string, unknown> | null | undefined {
+  const value = ruleSchemaText.value.trim()
+  if (!value) {
+    return null
+  }
+  try {
+    const parsed = JSON.parse(value)
+    if (!parsed || Array.isArray(parsed) || typeof parsed !== 'object') {
+      rules.lastError = 'rule_schema must be a JSON object.'
+      return undefined
+    }
+    return parsed as Record<string, unknown>
+  } catch {
+    rules.lastError = 'rule_schema must be valid JSON.'
+    return undefined
+  }
+}
+
+function formatRuleSchema(value: Record<string, unknown> | null) {
+  return value ? JSON.stringify(value, null, 2) : ''
 }
 
 async function toggleStatus(rule: RuleItemResponse) {
@@ -308,6 +345,7 @@ function displayRuleLevel(ruleLevelValue: string) {
   const labels: Record<string, string> = {
     hard: '硬性规则',
     soft: '建议规则',
+    guideline: '参考规则',
     reference: '参考规则',
   }
   return labels[ruleLevelValue] ?? ruleLevelValue

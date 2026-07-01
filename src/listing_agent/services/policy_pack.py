@@ -53,17 +53,6 @@ async def build_policy_pack(
     )
     return {
         "product_facts": product_facts_from_brief(brief),
-        "hard_rules": [
-            {
-                "rule_id": rule.id,
-                "category": rule.rule_category,
-                "title": rule.rule_title,
-                "content": rule.rule_content,
-                "level": rule.rule_level,
-                "priority": rule.priority,
-            }
-            for rule in rules
-        ],
         "field_rules": _build_field_rules(rules),
         "keyword_plan": {
             "must_use": _dedupe_text(keywords_seed),
@@ -86,15 +75,23 @@ async def build_policy_pack(
             "differentiators": _flatten_text(action_brief.get("differentiators")),
             "must_cover": _flatten_text(action_brief.get("must_cover")),
             "do_not_copy": True,
-            "source_analysis_id": competitor_analysis.id if competitor_analysis is not None else None,
+            "source_analysis_id": (
+                competitor_analysis.id
+                if competitor_analysis is not None
+                else None
+            ),
         },
         "missing_facts": missing_facts,
         "custom_prompt_policy": {
-            "value": custom_prompt.strip() if isinstance(custom_prompt, str) and custom_prompt.strip() else None,
+            "value": (
+                custom_prompt.strip()
+                if isinstance(custom_prompt, str) and custom_prompt.strip()
+                else None
+            ),
             "scope": "style, tone, selling point priority, and emphasis only",
             "cannot_override": [
                 "product facts",
-                "hard rules",
+                "field rules",
                 "output contract",
                 "competitor constraints",
                 "forbidden claims",
@@ -103,7 +100,7 @@ async def build_policy_pack(
         "output_contract": {
             "title": "one title",
             "bullets": "exactly five bullet points",
-            "description_text": "fixed long description HTML",
+            "description_text": "description HTML following active description rules",
             "search_terms": "backend search terms as phrase list",
         },
     }
@@ -128,37 +125,56 @@ async def _load_competitor_analysis(
     return result.scalar_one_or_none()
 
 
+def _rule_prompt_payload(rule: Rule) -> dict[str, Any]:
+    return {
+        "content": rule.rule_content,
+        "level": _normalized_level(rule.rule_level),
+    }
+
+
 def _build_field_rules(rules: list[Rule]) -> dict[str, list[dict[str, Any]]]:
     field_rules = {
+        "global": [],
         "title": [],
         "bullets": [],
         "description_text": [],
         "search_terms": [],
+        "competitor_usage": [],
+        "output_contract": [],
     }
     aliases = {
+        "global": "global",
         "title": "title",
         "bullet": "bullets",
         "bullets": "bullets",
-        "description": "description_text",
         "description_text": "description_text",
+        "description": "description_text",
         "search": "search_terms",
         "search_terms": "search_terms",
         "keyword": "search_terms",
+        "competitor_usage": "competitor_usage",
+        "competitor": "competitor_usage",
+        "output_contract": "output_contract",
+        "contract": "output_contract",
     }
     for rule in rules:
-        category = (rule.rule_category or "").lower()
-        target = next((value for key, value in aliases.items() if key in category), None)
-        if target is None:
-            continue
-        field_rules[target].append(
-            {
-                "rule_id": rule.id,
-                "title": rule.rule_title,
-                "content": rule.rule_content,
-                "priority": rule.priority,
-            }
-        )
+        target = _rule_target(rule, aliases)
+        field_rules[target].append(_rule_prompt_payload(rule))
     return field_rules
+
+
+def _rule_target(rule: Rule, aliases: dict[str, str]) -> str:
+    category = (rule.rule_category or "").lower()
+    return next((value for key, value in aliases.items() if key in category), "global")
+
+
+def _normalized_level(value: str | None) -> str:
+    normalized = (value or "").strip().lower()
+    if normalized == "reference":
+        return "guideline"
+    if normalized in {"hard", "soft", "guideline"}:
+        return normalized
+    return "guideline"
 
 
 def _missing_facts(brief: ProductBrief, constraints: dict[str, Any]) -> list[str]:

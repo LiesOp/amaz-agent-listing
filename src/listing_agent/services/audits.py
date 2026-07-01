@@ -10,7 +10,6 @@ from sqlalchemy.ext.asyncio import AsyncSession
 
 from listing_agent.models.conversation import Conversation
 from listing_agent.models.v1_data import AuditResult, Draft, Rule
-from listing_agent.services.agent_tools import build_listing_agent_tools
 from listing_agent.services.llm import (
     get_chat_model_with_config,
     read_structured_response,
@@ -104,18 +103,18 @@ class AuditService:
         model, model_config = await get_chat_model_with_config(session)
         agent = create_agent(
             model=model,
-            tools=build_listing_agent_tools(
-                session,
-                brief_id=context["draft"].get("brief_id"),
-            ),
+            tools=[],
             response_format=ProviderStrategy(schema=AuditOutput),
             system_prompt=(
                 "You perform final quality control for Amazon US listing copy. "
+                "policy_pack is the mandatory source of truth for this audit. "
+                "policy_pack.field_rules contains the binding rules, not optional "
+                "references. Rules with level hard are non-negotiable. "
                 "Only check hard rule violations, fabricated product facts, high-risk "
                 "claims, required output structure errors, and obvious competitor copy risk. "
                 "Do not provide open-ended style improvements, generic SEO suggestions, "
-                "or subjective wording polish. Use listing_rules_tool before auditing and "
-                "reference rule_id for every finding that maps to a tool-returned rule. "
+                "or subjective wording polish. Reference rule_id for every finding that "
+                "maps to a policy_pack rule. "
                 "Return status only as pass, warning, or fail."
             ),
         )
@@ -159,6 +158,14 @@ class AuditService:
 
 def build_audit_context(draft: Draft) -> dict[str, Any]:
     """Build the compact prompt context used for copy audit."""
+    generation_context = (
+        draft.generation_context
+        if isinstance(draft.generation_context, dict)
+        else {}
+    )
+    policy_pack = generation_context.get("policy_pack")
+    if not isinstance(policy_pack, dict):
+        raise AuditError("draft does not include policy_pack for audit")
     return {
         "draft": {
             "id": draft.id,
@@ -169,7 +176,7 @@ def build_audit_context(draft: Draft) -> dict[str, Any]:
             "search_terms": draft.search_terms or [],
             "version_no": draft.version_no,
         },
-        "available_tools": ["listing_rules_tool", "competitor_analysis_tool"],
+        "policy_pack": policy_pack,
         "audit_requirements": {
             "status": "one of pass, warning, fail",
             "risk_score": "integer from 0 to 100; higher means riskier",

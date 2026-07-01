@@ -120,6 +120,7 @@ export interface RuleItemResponse {
   rule_category: string
   rule_title: string
   rule_content: string
+  rule_schema: Record<string, unknown> | null
   rule_scope: string
   rule_level: string
   priority: number
@@ -147,6 +148,7 @@ export interface RuleCreateRequest {
   rule_category: string
   rule_title: string
   rule_content: string
+  rule_schema?: Record<string, unknown> | null
   rule_scope?: string
   rule_level?: string
   priority?: number
