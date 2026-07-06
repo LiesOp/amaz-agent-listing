@@ -66,6 +66,10 @@ def validate_against_policy_pack(
     normalized = _normalize_draft(draft, warnings)
     _validate_structure(normalized, errors)
     _validate_description_html(normalized.get("description_text"), errors)
+    _validate_title_policy(normalized, policy_pack, errors)
+    _validate_bullet_quality(normalized, policy_pack, errors)
+    _validate_description_opening(normalized, errors)
+    _validate_features_distinct_from_bullets(normalized, errors)
     _validate_forbidden_terms(normalized, policy_pack, errors)
     _validate_missing_facts(normalized, policy_pack, errors)
     _validate_search_terms(normalized, policy_pack, errors, warnings)
@@ -152,6 +156,129 @@ def _validate_description_html(value: Any, errors: list[ValidationIssue]) -> Non
         )
 
 
+def _validate_title_policy(
+    draft: dict[str, Any],
+    policy_pack: dict[str, Any],
+    errors: list[ValidationIssue],
+) -> None:
+    title = str(draft.get("title") or "").strip()
+    if not title:
+        return
+    product_facts = policy_pack.get("product_facts") if isinstance(policy_pack, dict) else {}
+    brand = str((product_facts or {}).get("brand") or "").strip()
+    if brand:
+        if len(brand) > 8:
+            errors.append(
+                _issue(
+                    "title",
+                    "brand_length",
+                    "Brand from product facts exceeds the 8-character title rule.",
+                )
+            )
+        if not title.lower().startswith(brand.lower()):
+            errors.append(
+                _issue(
+                    "title",
+                    "brand_position",
+                    "Title must start with the verified brand.",
+                )
+            )
+
+
+def _validate_bullet_quality(
+    draft: dict[str, Any],
+    policy_pack: dict[str, Any],
+    errors: list[ValidationIssue],
+) -> None:
+    bullets = draft.get("bullets")
+    if not isinstance(bullets, list) or not all(isinstance(item, str) for item in bullets):
+        return
+    for left_index, left in enumerate(bullets):
+        for right_index, right in enumerate(bullets[left_index + 1 :], start=left_index + 1):
+            similarity = _jaccard_similarity(left, right)
+            if similarity > 0.7:
+                errors.append(
+                    _issue(
+                        "bullets",
+                        "bullet_duplicate_similarity",
+                        (
+                            "Bullet "
+                            f"{left_index + 1} and bullet {right_index + 1} are too similar."
+                        ),
+                    )
+                )
+    core_features = _flatten_text((policy_pack.get("product_facts") or {}).get("core_features"))
+    if not core_features:
+        return
+    for bullet_index, bullet in enumerate(bullets, start=1):
+        for feature in core_features:
+            if _is_near_copy(bullet, feature):
+                errors.append(
+                    _issue(
+                        "bullets",
+                        "bullet_core_feature_copy",
+                        (
+                            f"Bullet {bullet_index} is too close to a core feature; "
+                            "it should synthesize product facts into buyer benefits."
+                        ),
+                    )
+                )
+                break
+
+
+def _validate_description_opening(
+    draft: dict[str, Any],
+    errors: list[ValidationIssue],
+) -> None:
+    title = str(draft.get("title") or "")
+    bullets = draft.get("bullets") if isinstance(draft.get("bullets"), list) else []
+    opening = _first_paragraph_text(str(draft.get("description_text") or ""))
+    if not opening:
+        return
+    if title and _jaccard_similarity(opening, title) > 0.65:
+        errors.append(
+            _issue(
+                "description_text",
+                "description_opening_matches_title",
+                "Description opening is too similar to the title.",
+            )
+        )
+    bullet_text = " ".join(item for item in bullets if isinstance(item, str))
+    if bullet_text and _jaccard_similarity(opening, bullet_text) < 0.03:
+        errors.append(
+            _issue(
+                "description_text",
+                "description_opening_missing_bullet_summary",
+                "Description opening should summarize the bullet-point benefits.",
+            )
+        )
+
+
+def _validate_features_distinct_from_bullets(
+    draft: dict[str, Any],
+    errors: list[ValidationIssue],
+) -> None:
+    bullets = draft.get("bullets") if isinstance(draft.get("bullets"), list) else []
+    features = _feature_paragraphs(str(draft.get("description_text") or ""))
+    if not bullets or not features:
+        return
+    for feature_index, feature in enumerate(features, start=1):
+        for bullet_index, bullet in enumerate(bullets, start=1):
+            if not isinstance(bullet, str):
+                continue
+            if _jaccard_similarity(feature, bullet) > 0.65:
+                errors.append(
+                    _issue(
+                        "description_text",
+                        "features_duplicate_bullets",
+                        (
+                            f"Feature {feature_index} is too similar to bullet "
+                            f"{bullet_index}."
+                        ),
+                    )
+                )
+
+
 def _validate_forbidden_terms(
     draft: dict[str, Any],
     policy_pack: dict[str, Any],
@@ -185,7 +312,9 @@ def _validate_missing_facts(
 ) -> None:
     missing_facts = {str(item).lower() for item in policy_pack.get("missing_facts") or []}
     text = _all_copy_text(draft).lower()
-    evidence_terms = _flatten_text((policy_pack.get("claims_policy") or {}).get("requires_evidence"))
+    evidence_terms = _flatten_text(
+        (policy_pack.get("claims_policy") or {}).get("requires_evidence")
+    )
     evidence_matches = _matching_terms(text, evidence_terms)
     if evidence_matches:
         errors.append(
@@ -200,7 +329,15 @@ def _validate_missing_facts(
     if not missing_facts:
         return
     guarded_terms = {
-        "materials": ["cotton", "steel", "stainless steel", "plastic", "silicone", "wood", "leather"],
+        "materials": [
+            "cotton",
+            "steel",
+            "stainless steel",
+            "plastic",
+            "silicone",
+            "wood",
+            "leather",
+        ],
         "size_info": ["inch", "inches", "cm", "mm", "ft", "feet", "oz", "lb", "lbs", "kg"],
         "certification": ["certified", "fda", "ce", "rohs", "ul listed"],
         "warranty": ["warranty", "guarantee", "guaranteed"],
@@ -283,6 +420,60 @@ def _matching_terms(text: str, terms: list[str]) -> list[str]:
         if re.search(rf"(?<![a-z0-9]){re.escape(normalized)}(?![a-z0-9])", lowered):
             matches.append(term)
     return matches
+def _is_near_copy(value: str, source: str) -> bool:
+    normalized_value = _normalize_space(value).lower()
+    normalized_source = _normalize_space(source).lower()
+    if not normalized_value or not normalized_source:
+        return False
+    if normalized_source in normalized_value or normalized_value in normalized_source:
+        return True
+    return _jaccard_similarity(value, source) > 0.8
+
+
+def _jaccard_similarity(left: str, right: str) -> float:
+    left_tokens = set(_tokens(left))
+    right_tokens = set(_tokens(right))
+    if not left_tokens or not right_tokens:
+        return 0.0
+    return len(left_tokens & right_tokens) / len(left_tokens | right_tokens)
+
+
+def _tokens(value: str) -> list[str]:
+    return [
+        token
+        for token in re.findall(r"[a-z0-9]+", value.lower())
+        if len(token) > 1
+    ]
+
+
+def _first_paragraph_text(value: str) -> str:
+    paragraphs = _paragraph_texts(value)
+    return paragraphs[0] if paragraphs else _strip_html(value).strip()
+
+
+def _feature_paragraphs(value: str) -> list[str]:
+    paragraphs = _paragraph_texts(value)
+    for index, paragraph in enumerate(paragraphs):
+        if paragraph.strip().lower().rstrip(":") == "features":
+            return paragraphs[index + 1 :]
+    return []
+
+
+def _paragraph_texts(value: str) -> list[str]:
+    matches = re.findall(r"<p\b[^>]*>(.*?)</p>", value, flags=re.IGNORECASE | re.DOTALL)
+    return [
+        _normalize_space(_strip_html(match))
+        for match in matches
+        if _normalize_space(_strip_html(match))
+    ]
+
+
+def _strip_html(value: str) -> str:
+    return re.sub(r"<[^>]+>", " ", value)
+
+
+def _normalize_space(value: str) -> str:
+    return " ".join(str(value).split())
 
 
 def _flatten_text(value: Any) -> list[str]:

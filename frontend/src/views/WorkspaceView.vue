@@ -5,7 +5,6 @@
       <ConversationPanel />
       <BriefForm />
       <CompetitorImportPanel />
-      <JobStatusPanel />
       <CompetitorAnalysisPanel />
     </div>
 
@@ -33,7 +32,6 @@ import CompetitorImportPanel from '../components/CompetitorImportPanel.vue'
 import ConversationPanel from '../components/ConversationPanel.vue'
 import DraftGeneratorPanel from '../components/DraftGeneratorPanel.vue'
 import DraftResultPanel from '../components/DraftResultPanel.vue'
-import JobStatusPanel from '../components/JobStatusPanel.vue'
 import RewritePanel from '../components/RewritePanel.vue'
 import StepNav from '../components/StepNav.vue'
 import { useWorkflowStore } from '../stores/workflow'

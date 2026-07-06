@@ -460,6 +460,15 @@ select:disabled {
   grid-column: 1 / -1;
 }
 
+.trace-json {
+  max-height: 220px;
+  margin: 0;
+  overflow: auto;
+  white-space: pre-wrap;
+  font-size: 12px;
+  line-height: 1.5;
+}
+
 .competitor-analysis-grid {
   grid-template-columns:
     minmax(180px, 1.3fr)

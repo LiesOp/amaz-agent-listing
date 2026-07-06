@@ -1,3 +1,5 @@
+import asyncio
+
 from sqlalchemy import select
 from sqlalchemy.ext.asyncio import AsyncSession
 
@@ -11,6 +13,8 @@ from listing_agent.services.competitor_analysis import (
 )
 
 logger = get_logger(__name__)
+COMPETITOR_ANALYSIS_CONCURRENCY = 2
+COMPETITOR_ANALYSIS_SEMAPHORE = asyncio.Semaphore(COMPETITOR_ANALYSIS_CONCURRENCY)
 
 
 class JobNotFoundError(Exception):
@@ -160,3 +164,16 @@ class JobQueueService:
                 job.job_type,
                 job.status,
             )
+
+    async def run_competitor_analysis_jobs(
+        self,
+        jobs: list[tuple[str, str]],
+    ) -> None:
+        """Execute competitor analysis jobs with bounded concurrency."""
+        async def run_one(job_id: str, competitor_input_id: str) -> None:
+            async with COMPETITOR_ANALYSIS_SEMAPHORE:
+                await self.run_competitor_analysis_job(job_id, competitor_input_id)
+
+        await asyncio.gather(
+            *(run_one(job_id, competitor_input_id) for job_id, competitor_input_id in jobs)
+        )

@@ -9,7 +9,7 @@ from uuid import uuid4
 import httpx
 from bs4 import BeautifulSoup
 from langchain.agents import create_agent
-from langchain_core.messages import HumanMessage
+from langchain_core.messages import HumanMessage, SystemMessage
 from pydantic import BaseModel, Field
 from sqlalchemy import select
 from sqlalchemy.ext.asyncio import AsyncSession
@@ -476,7 +476,15 @@ class CompetitorAnalysisService:
                 response=response,
             )
         except Exception as exc:
-            raise CompetitorAnalysisLLMError(f"single competitor LLM analysis failed: {exc}") from exc
+            try:
+                return normalize_single_competitor_analysis_result(
+                    heuristic_seed,
+                    heuristic_seed,
+                )
+            except Exception as fallback_exc:
+                raise CompetitorAnalysisLLMError(
+                    f"single competitor LLM analysis failed: {exc}"
+                ) from fallback_exc
 
         structured_response = response.get("structured_response")
         try:
@@ -486,13 +494,21 @@ class CompetitorAnalysisService:
                     heuristic_seed,
                 )
             if isinstance(structured_response, dict):
-                parsed = SingleCompetitorAnalysisOutput.model_validate(structured_response).model_dump()
+                parsed = SingleCompetitorAnalysisOutput.model_validate(
+                    structured_response
+                ).model_dump()
                 return normalize_single_competitor_analysis_result(parsed, heuristic_seed)
         except Exception as exc:
-            raise CompetitorAnalysisLLMError(
-                f"single competitor LLM analysis returned invalid structure: {exc}"
-            ) from exc
-        raise CompetitorAnalysisLLMError("single competitor LLM analysis returned no structured output")
+            try:
+                return normalize_single_competitor_analysis_result(
+                    heuristic_seed,
+                    heuristic_seed,
+                )
+            except Exception as fallback_exc:
+                raise CompetitorAnalysisLLMError(
+                    f"single competitor LLM analysis returned invalid structure: {exc}"
+                ) from fallback_exc
+        return normalize_single_competitor_analysis_result(heuristic_seed, heuristic_seed)
 
     async def aggregate_competitor_analysis(
         self,
@@ -518,6 +534,17 @@ class CompetitorAnalysisService:
         if not summaries:
             raise CompetitorAggregationError("no completed competitor analyses found")
 
+        input_result = await session.execute(
+            select(CompetitorInput).where(
+                CompetitorInput.brief_id == brief_id,
+                CompetitorInput.status.in_(["pending", "imported", "queued", "running"]),
+            )
+        )
+        if input_result.scalars().first() is not None:
+            raise CompetitorAggregationError(
+                "competitor analyses are still running; aggregate after all inputs finish"
+            )
+
         if len(summaries) == 1:
             report = build_single_competitor_final_report(brief, summaries[0])
             package = build_competitor_analysis_package_from_report(report)
@@ -540,20 +567,26 @@ class CompetitorAnalysisService:
         try:
             package = await self._generate_aggregated_competitor_package(session, brief, summaries)
         except Exception as exc:
+            report = build_aggregated_competitor_report(brief, summaries)
+            package = build_competitor_analysis_package_from_report(report)
+            validate_competitor_analysis_package(package)
             analysis = await self._upsert_aggregated_analysis(
                 session,
                 brief=brief,
                 competitor_count=len(summaries),
-                report=None,
-                action_brief=None,
-                constraints=None,
-                status_value="failed",
-                error_message=str(exc),
-                model_name="llm",
+                report=package["report"],
+                action_brief=package["action_brief"],
+                constraints=package["constraints"],
+                status_value="completed",
+                error_message=(
+                    "LLM aggregation failed; deterministic fallback used: "
+                    f"{exc}"
+                ),
+                model_name="deterministic-fallback",
             )
             await session.commit()
             await session.refresh(analysis)
-            raise CompetitorAggregationError(f"aggregated competitor LLM analysis failed: {exc}") from exc
+            return analysis
 
         analysis = await self._upsert_aggregated_analysis(
             session,
@@ -579,47 +612,21 @@ class CompetitorAnalysisService:
         """Use the configured LLM to generate the final aggregate analysis package."""
         context = build_aggregation_llm_context(brief, summaries)
         model, model_config = await get_chat_model_with_config(session)
-        agent = create_agent(
-            model=model,
-            tools=[],
-            response_format=CompetitorAnalysisPackageOutput,
-            system_prompt=(
-                "You create the final aggregated competitor analysis report for Amazon "
-                "listing generation. Synthesize across all completed single-competitor "
-                "analyses. Do not merely concatenate inputs. Reduce noisy details into "
-                "clear market patterns, keyword insights, comparison matrix, "
-                "differentiation opportunities, compliance risks, and recommended listing "
-                "strategy. Do not copy competitor text. Do not treat competitor facts as "
-                "facts about the user's product. Mark missing user facts explicitly. "
-                "Return exactly three top-level sections: report, action_brief, constraints. "
-                "The report is for humans and must fill every required report section. "
-                "Use these exact snake_case keys inside report: market_patterns.common_features, "
-                "market_patterns.common_benefits, market_patterns.common_scenarios, "
-                "market_patterns.common_audiences, market_patterns.common_keywords, "
-                "keyword_insights.primary, keyword_insights.long_tail, keyword_insights.attributes, "
-                "keyword_insights.risk_terms, recommended_listing_strategy.positioning, "
-                "recommended_listing_strategy.title_strategy, recommended_listing_strategy.bullet_strategy, "
-                "recommended_listing_strategy.description_strategy, recommended_listing_strategy.keyword_strategy, "
-                "recommended_listing_strategy.avoid_strategy. Use arrays of short strings for these fields. "
-                "The action_brief is for the listing generation agent and must be concise, actionable, "
-                "and contain positioning, title_plan, bullet_plan, description_plan, keywords_to_use, "
-                "search_terms, differentiators, and must_cover. The constraints section contains hard "
-                "limits: avoid_terms, avoid_claim_types, do_not_infer, requires_user_evidence, "
-                "and competitor_copy_policy."
-            ),
+        structured_model = model.with_structured_output(
+            CompetitorAnalysisPackageOutput,
+            include_raw=True,
         )
-        response = await agent.ainvoke(
-            {
-                "messages": [
-                    HumanMessage(
-                        content=(
-                            "Generate the final competitor analysis package JSON from "
-                            "this compact context:\n"
-                            f"{json.dumps(context, ensure_ascii=False)}"
-                        )
+        response = await structured_model.ainvoke(
+            [
+                SystemMessage(content=build_aggregation_system_prompt()),
+                HumanMessage(
+                    content=(
+                        "Generate the final competitor analysis package from "
+                        "this compact context:\n"
+                        f"{json.dumps(context, ensure_ascii=False)}"
                     )
-                ]
-            }
+                ),
+            ]
         )
         await record_model_invocation(
             session,
@@ -628,23 +635,38 @@ class CompetitorAnalysisService:
             api_endpoint="POST /api/v1/competitors/by-brief/{brief_id}/aggregate-analysis",
             response=response,
         )
-        structured_response = response.get("structured_response")
+        structured_response = (
+            response.get("parsed") if isinstance(response, dict) else response
+        )
         try:
             if isinstance(structured_response, CompetitorAnalysisPackageOutput):
-                package = structured_response.model_dump()
+                package = normalize_aggregated_competitor_package(
+                    structured_response.model_dump(),
+                    brief,
+                    summaries,
+                )
                 validate_competitor_analysis_package(package)
                 return package
             if isinstance(structured_response, dict):
                 parsed = CompetitorAnalysisPackageOutput.model_validate(
                     structured_response
                 ).model_dump()
+                parsed = normalize_aggregated_competitor_package(parsed, brief, summaries)
                 validate_competitor_analysis_package(parsed)
                 return parsed
         except Exception as exc:
             raise CompetitorAggregationError(
                 f"aggregated competitor LLM analysis returned invalid structure: {exc}"
             ) from exc
-        raise CompetitorAggregationError("aggregated competitor LLM analysis returned no structured output")
+        parsing_error = response.get("parsing_error") if isinstance(response, dict) else None
+        if parsing_error:
+            raise CompetitorAggregationError(
+                "aggregated competitor LLM analysis returned invalid structure: "
+                f"{parsing_error}"
+            )
+        raise CompetitorAggregationError(
+            "aggregated competitor LLM analysis returned no structured output"
+        )
 
     async def _upsert_aggregated_analysis(
         self,
@@ -1408,6 +1430,59 @@ def validate_aggregated_competitor_report(report: dict[str, Any]) -> None:
             "aggregated competitor LLM analysis has invalid list fields: "
             + ", ".join(invalid_lists)
         )
+
+
+def build_aggregation_system_prompt() -> str:
+    """Return the one-shot aggregate analysis prompt."""
+    return (
+        "Create an aggregated Amazon competitor analysis for listing generation. "
+        "Synthesize the completed competitor analyses into market patterns, keyword "
+        "insights, differentiation opportunities, risks, and a practical listing "
+        "strategy. Prefer shared signals and meaningful contrasts over repeating each "
+        "competitor one by one. Use only the provided data: do not invent product "
+        "facts, do not copy competitor wording, and do not treat competitor claims as "
+        "facts about the user's product. Mark missing user facts that require "
+        "confirmation. Return the required structured package with three sections: "
+        "report for human review, action_brief for the generation agent, and "
+        "constraints for hard safety limits."
+    )
+
+
+def normalize_aggregated_competitor_package(
+    package: dict[str, Any],
+    brief: ProductBrief,
+    summaries: list[CompetitorSummary],
+) -> dict[str, Any]:
+    """Fill empty required aggregate fields from deterministic competitor signals."""
+    fallback_report = build_aggregated_competitor_report(brief, summaries)
+    report = package.get("report") if isinstance(package.get("report"), dict) else {}
+    normalized_report = fill_empty_values(report, fallback_report)
+    fallback_package = build_competitor_analysis_package_from_report(normalized_report)
+    action_brief = package.get("action_brief")
+    constraints = package.get("constraints")
+    return {
+        "report": normalized_report,
+        "action_brief": fill_empty_values(
+            action_brief if isinstance(action_brief, dict) else {},
+            fallback_package["action_brief"],
+        ),
+        "constraints": fill_empty_values(
+            constraints if isinstance(constraints, dict) else {},
+            fallback_package["constraints"],
+        ),
+    }
+
+
+def fill_empty_values(value: Any, fallback: Any) -> Any:
+    """Recursively prefer value, using fallback only when value is empty."""
+    if isinstance(value, dict) and isinstance(fallback, dict):
+        merged = dict(value)
+        for key, fallback_value in fallback.items():
+            merged[key] = fill_empty_values(merged.get(key), fallback_value)
+        return merged
+    if value in (None, "", [], {}):
+        return fallback
+    return value
 
 
 def build_competitor_analysis_package_from_report(report: dict[str, Any]) -> dict[str, Any]:

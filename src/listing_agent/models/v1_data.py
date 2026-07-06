@@ -309,6 +309,9 @@ class AuditResult(Base):
     findings: Mapped[list | None] = mapped_column(JSON, nullable=True)
     suggestions: Mapped[list | None] = mapped_column(JSON, nullable=True)
     used_rule_ids: Mapped[list | None] = mapped_column(JSON, nullable=True)
+    rule_trace: Mapped[dict | None] = mapped_column(JSON, nullable=True)
+    competitor_strategy_trace: Mapped[dict | None] = mapped_column(JSON, nullable=True)
+    validation_trace: Mapped[dict | None] = mapped_column(JSON, nullable=True)
     created_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), default=_app_now)
 
     draft: Mapped[Draft] = relationship(back_populates="audit_results")

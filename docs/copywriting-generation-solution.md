@@ -165,7 +165,6 @@ output_contract
   "brand_max_chars": 8,
   "required_parts": [
     "brand",
-    "core_keyword",
     "key_attributes",
     "variant_attributes"
   ],
@@ -527,10 +526,11 @@ repair 后再次校验。
 
 ### 阶段四：审计和可追踪
 
-1. 扩展 `compliance_trace`。
-2. 保存每个字段使用的 rule\_id。
-3. 保存竞品策略来源。
-4. 前端展示失败原因和规则命中情况。
+1. 扩展 `compliance_trace` 与 `generation_context`，保存规则、竞品策略和校验摘要。
+2. 审核结果保存 `rule_trace`，按字段记录命中的规则内容摘要和规则等级。
+3. 审核结果保存 `competitor_strategy_trace`，记录竞品策略来源和策略字段。
+4. 审核结果保存 `validation_trace`，记录确定性校验结果、失败原因和 repair 情况。
+5. 前端展示失败原因、规则命中情况、竞品策略来源和校验 trace。
 
 ## 13. 最终验收标准
 

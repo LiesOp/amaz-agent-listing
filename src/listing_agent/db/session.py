@@ -160,6 +160,21 @@ def _ensure_sqlite_compat_columns(sync_connection) -> None:
             "ALTER TABLE rules ADD COLUMN rule_schema JSON"
         )
 
+    rows = sync_connection.exec_driver_sql("PRAGMA table_info(audit_results)").fetchall()
+    audit_column_names = {row[1] for row in rows}
+    if rows and "rule_trace" not in audit_column_names:
+        sync_connection.exec_driver_sql(
+            "ALTER TABLE audit_results ADD COLUMN rule_trace JSON"
+        )
+    if rows and "competitor_strategy_trace" not in audit_column_names:
+        sync_connection.exec_driver_sql(
+            "ALTER TABLE audit_results ADD COLUMN competitor_strategy_trace JSON"
+        )
+    if rows and "validation_trace" not in audit_column_names:
+        sync_connection.exec_driver_sql(
+            "ALTER TABLE audit_results ADD COLUMN validation_trace JSON"
+        )
+
 
 async def dispose_engine() -> None:
     """Dispose pooled database connections during application shutdown."""

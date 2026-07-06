@@ -69,6 +69,9 @@ def extract_token_usage(response: dict[str, Any]) -> tuple[int, int, int]:
     messages = response.get("messages")
     if isinstance(messages, list):
         candidates.extend(reversed(messages))
+    raw_response = response.get("raw")
+    if raw_response is not None:
+        candidates.append(raw_response)
     candidates.append(response)
 
     for candidate in candidates:

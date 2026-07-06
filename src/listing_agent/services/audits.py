@@ -70,6 +70,11 @@ class AuditService:
             findings=audited["findings"],
             suggestions=audited["suggestions"],
             used_rule_ids=used_rule_ids,
+            rule_trace=build_rule_trace(context["policy_pack"]),
+            competitor_strategy_trace=build_competitor_strategy_trace(
+                context["policy_pack"]
+            ),
+            validation_trace=build_validation_trace(draft),
         )
         session.add(audit)
         await session.flush()
@@ -113,8 +118,8 @@ class AuditService:
                 "Only check hard rule violations, fabricated product facts, high-risk "
                 "claims, required output structure errors, and obvious competitor copy risk. "
                 "Do not provide open-ended style improvements, generic SEO suggestions, "
-                "or subjective wording polish. Reference rule_id for every finding that "
-                "maps to a policy_pack rule. "
+                "or subjective wording polish. Reference the matched field and rule level "
+                "when a finding maps to policy_pack.field_rules. "
                 "Return status only as pass, warning, or fail."
             ),
         )
@@ -192,6 +197,84 @@ def build_audit_context(draft: Draft) -> dict[str, Any]:
                 "competitor copy risk",
             ],
         },
+    }
+
+
+def build_rule_trace(policy_pack: dict[str, Any]) -> dict[str, Any]:
+    """Summarize field rules without expanding the prompt-facing rule payload."""
+    field_rules = policy_pack.get("field_rules") if isinstance(policy_pack, dict) else {}
+    if not isinstance(field_rules, dict):
+        return {"fields": {}, "total_count": 0, "hard_count": 0}
+    fields: dict[str, list[dict[str, Any]]] = {}
+    total_count = 0
+    hard_count = 0
+    for field_name, rules in field_rules.items():
+        if not isinstance(rules, list):
+            continue
+        field_items = []
+        for rule in rules:
+            if not isinstance(rule, dict):
+                continue
+            level = str(rule.get("level") or "guideline")
+            content = str(rule.get("content") or "")
+            if not content.strip():
+                continue
+            total_count += 1
+            if level == "hard":
+                hard_count += 1
+            field_items.append(
+                {
+                    "level": level,
+                    "content_excerpt": content[:180],
+                }
+            )
+        fields[str(field_name)] = field_items
+    return {
+        "fields": fields,
+        "total_count": total_count,
+        "hard_count": hard_count,
+    }
+
+
+def build_competitor_strategy_trace(policy_pack: dict[str, Any]) -> dict[str, Any]:
+    competitor_strategy = (
+        policy_pack.get("competitor_strategy")
+        if isinstance(policy_pack, dict)
+        else {}
+    )
+    if not isinstance(competitor_strategy, dict):
+        return {}
+    trace: dict[str, Any] = {
+        "source_analysis_id": competitor_strategy.get("source_analysis_id"),
+        "do_not_copy": competitor_strategy.get("do_not_copy"),
+    }
+    for key in (
+        "positioning",
+        "title_plan",
+        "bullet_plan",
+        "description_plan",
+        "differentiators",
+        "must_cover",
+    ):
+        value = competitor_strategy.get(key)
+        if isinstance(value, list):
+            trace[key] = value[:5]
+        else:
+            trace[key] = value
+    return trace
+
+
+def build_validation_trace(draft: Draft) -> dict[str, Any]:
+    generation_context = (
+        draft.generation_context
+        if isinstance(draft.generation_context, dict)
+        else {}
+    )
+    validation = generation_context.get("deterministic_validation")
+    auto_repair = generation_context.get("auto_repair")
+    return {
+        "deterministic_validation": validation if isinstance(validation, dict) else None,
+        "auto_repair": auto_repair if isinstance(auto_repair, dict) else None,
     }
 
 

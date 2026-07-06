@@ -150,6 +150,16 @@ class DraftService:
         )
         rewritten = await self._rewrite_copy(session, prompt_context)
         validation_result = validate_against_policy_pack(rewritten, policy_pack)
+        repaired = False
+        if not validation_result.passed:
+            rewritten = await self._repair_rewrite_copy(
+                session,
+                context=prompt_context,
+                draft=rewritten,
+                validator_errors=validation_result.to_dict()["errors"],
+            )
+            repaired = True
+            validation_result = validate_against_policy_pack(rewritten, policy_pack)
         if validation_result.normalized_draft is not None:
             rewritten = {
                 **rewritten,
@@ -178,6 +188,7 @@ class DraftService:
                 prompt_context,
                 rewritten,
                 validation_result.to_dict(),
+                repaired,
             ),
             version_no=version_no,
         )
@@ -399,6 +410,57 @@ class DraftService:
             return parsed
         raise DraftGenerationError("LLM repair response did not include structured output")
 
+    async def _repair_rewrite_copy(
+        self,
+        session: AsyncSession,
+        context: dict[str, Any],
+        draft: dict[str, Any],
+        validator_errors: list[dict[str, Any]],
+    ) -> dict[str, Any]:
+        """Repair rewritten copy once while preserving rewrite metadata."""
+        model, model_config = await get_chat_model_with_config(session)
+        agent = create_agent(
+            model=model,
+            tools=[],
+            response_format=ProviderStrategy(schema=ListingRewriteOutput),
+            system_prompt=(
+                "You repair rewritten Amazon US listing copy. Only fix the exact "
+                "fields and issues listed in validator_errors. Do not add product "
+                "facts, do not change unrelated fields, and do not copy competitor "
+                "wording. policy_pack remains the source of truth. Return the full "
+                "repaired rewrite as structured output, including change_summary."
+            ),
+        )
+        repair_context = {
+            "policy_pack": context["policy_pack"],
+            "draft": draft,
+            "validator_errors": validator_errors,
+        }
+        response = await agent.ainvoke(
+            {
+                "messages": [
+                    HumanMessage(
+                        content=(
+                            "Repair this rewritten listing draft only for "
+                            "validator_errors.\nContext:\n"
+                            f"{json.dumps(repair_context, ensure_ascii=False)}"
+                        )
+                    )
+                ]
+            }
+        )
+        await record_model_invocation(
+            session,
+            model_config_id=model_config.id,
+            feature_name="repair_rewrite_copy",
+            api_endpoint="POST /api/v1/drafts/{draft_id}/rewrite",
+            response=response,
+        )
+        parsed = read_structured_response(response, schema=ListingRewriteOutput)
+        if parsed is not None:
+            return parsed
+        raise DraftGenerationError("LLM rewrite repair response did not include structured output")
+
     async def _next_version_no(self, session: AsyncSession, brief_id: str) -> int:
         result = await session.execute(
             select(func.max(Draft.version_no)).where(Draft.brief_id == brief_id)
@@ -444,6 +506,8 @@ def summarize_generation_context(
         "policy_pack": context["policy_pack"],
         "user_custom_prompt": context.get("user_custom_prompt"),
         "compliance_trace": generated.get("compliance_trace", {}),
+        "rule_trace": build_policy_rule_trace(context["policy_pack"]),
+        "competitor_strategy_trace": build_policy_competitor_trace(context["policy_pack"]),
         "deterministic_validation": validation_result,
         "auto_repair": {
             "attempted": repaired,
@@ -499,6 +563,7 @@ def summarize_rewrite_context(
     context: dict[str, Any],
     rewritten: dict[str, Any],
     validation_result: dict[str, Any],
+    repaired: bool,
 ) -> dict[str, Any]:
     """Persist compact trace metadata for a rewritten draft."""
     latest_audit = context["latest_audit"]
@@ -512,8 +577,74 @@ def summarize_rewrite_context(
             "change_summary": rewritten.get("change_summary", []),
         },
         "policy_pack": context["policy_pack"],
+        "rule_trace": build_policy_rule_trace(context["policy_pack"]),
+        "competitor_strategy_trace": build_policy_competitor_trace(context["policy_pack"]),
         "deterministic_validation": validation_result,
+        "auto_repair": {
+            "attempted": repaired,
+            "max_attempts": 1,
+        },
     }
+
+
+def build_policy_rule_trace(policy_pack: dict[str, Any]) -> dict[str, Any]:
+    field_rules = policy_pack.get("field_rules") if isinstance(policy_pack, dict) else {}
+    if not isinstance(field_rules, dict):
+        return {"fields": {}, "total_count": 0, "hard_count": 0}
+    fields: dict[str, list[dict[str, Any]]] = {}
+    total_count = 0
+    hard_count = 0
+    for field_name, rules in field_rules.items():
+        if not isinstance(rules, list):
+            continue
+        items = []
+        for rule in rules:
+            if not isinstance(rule, dict):
+                continue
+            content = str(rule.get("content") or "")
+            level = str(rule.get("level") or "guideline")
+            if not content.strip():
+                continue
+            total_count += 1
+            if level == "hard":
+                hard_count += 1
+            items.append(
+                {
+                    "level": level,
+                    "content_excerpt": content[:180],
+                }
+            )
+        fields[str(field_name)] = items
+    return {
+        "fields": fields,
+        "total_count": total_count,
+        "hard_count": hard_count,
+    }
+
+
+def build_policy_competitor_trace(policy_pack: dict[str, Any]) -> dict[str, Any]:
+    competitor_strategy = (
+        policy_pack.get("competitor_strategy")
+        if isinstance(policy_pack, dict)
+        else {}
+    )
+    if not isinstance(competitor_strategy, dict):
+        return {}
+    trace: dict[str, Any] = {
+        "source_analysis_id": competitor_strategy.get("source_analysis_id"),
+        "do_not_copy": competitor_strategy.get("do_not_copy"),
+    }
+    for key in (
+        "positioning",
+        "title_plan",
+        "bullet_plan",
+        "description_plan",
+        "differentiators",
+        "must_cover",
+    ):
+        value = competitor_strategy.get(key)
+        trace[key] = value[:5] if isinstance(value, list) else value
+    return trace
 
 
 def validate_generated_copy(value: dict[str, Any]) -> None:
@@ -546,7 +677,10 @@ def validate_rewritten_copy(value: dict[str, Any]) -> None:
 
 
 def _is_text_list(value: Any) -> bool:
-    return isinstance(value, list) and all(isinstance(item, str) and item.strip() for item in value)
+    return isinstance(value, list) and all(
+        isinstance(item, str) and item.strip()
+        for item in value
+    )
 
 
 def _looks_like_description_html(value: str) -> bool:

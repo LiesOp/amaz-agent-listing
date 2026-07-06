@@ -222,6 +222,9 @@ export const useWorkflowStore = defineStore('workflow', () => {
       if (!completedCount) {
         throw new Error('请先完成至少一个单品竞品分析，再进行聚合分析。')
       }
+      if (completedCount < competitorInputs.value.length) {
+        throw new Error('Please wait until every competitor analysis has finished before aggregating.')
+      }
       const response = await aggregateCompetitorAnalysisByBriefApi(briefId.value)
       aggregatedCompetitorAnalysis.value = response
       lastSuccess.value = '聚合竞品分析已完成。'

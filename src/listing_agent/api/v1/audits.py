@@ -24,6 +24,9 @@ def _to_audit_response(audit: AuditResult) -> AuditResultResponse:
         findings=audit.findings,
         suggestions=audit.suggestions,
         used_rule_ids=audit.used_rule_ids,
+        rule_trace=audit.rule_trace,
+        competitor_strategy_trace=audit.competitor_strategy_trace,
+        validation_trace=audit.validation_trace,
         created_at=audit.created_at,
     )
 

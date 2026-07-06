@@ -119,6 +119,7 @@ async def import_competitors(
         ) from exc
 
     analysis_jobs = []
+    queued_analysis_jobs = []
     for item in items:
         job = await job_service.enqueue_competitor_analysis(session, item.id)
         analysis_jobs.append(
@@ -129,11 +130,13 @@ async def import_competitors(
             )
         )
         if job.status == "queued":
-            background_tasks.add_task(
-                job_service.run_competitor_analysis_job,
-                job.id,
-                item.id,
-            )
+            queued_analysis_jobs.append((job.id, item.id))
+
+    if queued_analysis_jobs:
+        background_tasks.add_task(
+            job_service.run_competitor_analysis_jobs,
+            queued_analysis_jobs,
+        )
 
     return CompetitorImportResponse(
         job_id=analysis_jobs[0].job_id,

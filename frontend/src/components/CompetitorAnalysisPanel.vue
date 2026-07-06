@@ -94,7 +94,12 @@ const analysisItems = computed(() =>
   })),
 )
 
-const canAggregate = computed(() => Boolean(workflow.briefId && analysisItems.value.some((item) => item.summary)))
+const canAggregate = computed(
+  () =>
+    Boolean(workflow.briefId) &&
+    analysisItems.value.length > 0 &&
+    analysisItems.value.every((item) => item.summary),
+)
 
 function aggregate() {
   void workflow.aggregateCompetitorAnalysis()

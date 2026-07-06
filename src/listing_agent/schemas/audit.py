@@ -19,6 +19,9 @@ class AuditResultResponse(BaseModel):
     findings: list[dict] | None
     suggestions: list[str] | None
     used_rule_ids: list[str] | None
+    rule_trace: dict | None
+    competitor_strategy_trace: dict | None
+    validation_trace: dict | None
     created_at: datetime
 
 

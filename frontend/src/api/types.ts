@@ -188,6 +188,9 @@ export interface AuditResultResponse {
   findings: JsonObject[] | null
   suggestions: string[] | null
   used_rule_ids: string[] | null
+  rule_trace: JsonObject | null
+  competitor_strategy_trace: JsonObject | null
+  validation_trace: JsonObject | null
   created_at: IsoDateTime
 }
 
