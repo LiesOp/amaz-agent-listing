@@ -18,6 +18,25 @@ class DraftRewriteRequest(BaseModel):
     instructions: str = Field(min_length=1)
 
 
+class DescriptionSpecificationResponse(BaseModel):
+    """Structured specification fields for the long description."""
+
+    brand: str = ""
+    name: str = ""
+    color: str = ""
+    material: str = ""
+    size: str = ""
+    applicable: str = ""
+
+
+class DescriptionFieldsResponse(BaseModel):
+    """Frontend-facing long description fields."""
+
+    description_title: str
+    specification: DescriptionSpecificationResponse
+    features: list[str]
+
+
 class DraftResponse(BaseModel):
     """Generated listing copy saved as a draft."""
 
@@ -26,6 +45,7 @@ class DraftResponse(BaseModel):
     brief_id: str | None
     title: str | None
     bullets: list[str] | None
+    description_fields: DescriptionFieldsResponse | None = None
     description_text: str | None
     search_terms: list[str] | None
     generation_context: dict | None

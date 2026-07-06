@@ -120,7 +120,16 @@ async def build_policy_pack(
         "output_contract": {
             "title": "one title",
             "bullets": "exactly five bullet points",
-            "description_text": "description HTML following active description rules",
+            "description_text": (
+                "derived by the application from description_fields; the model "
+                "must not author long-description HTML directly"
+            ),
+            "description_fields": (
+                "structured long description fields: description_title, "
+                "specification.brand, specification.name, specification.color, "
+                "specification.material, specification.size, "
+                "specification.applicable, and features as list of strings"
+            ),
             "search_terms": "backend search terms as phrase list",
         },
     }

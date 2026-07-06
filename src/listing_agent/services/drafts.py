@@ -39,12 +39,33 @@ class ComplianceTraceOutput(BaseModel):
     assumptions: list[str] = Field(default_factory=list)
 
 
+class DescriptionSpecificationOutput(BaseModel):
+    """Structured specification fields for the long description."""
+
+    brand: str = ""
+    name: str = ""
+    color: str = ""
+    material: str = ""
+    size: str = ""
+    applicable: str = ""
+
+
+class DescriptionFieldsOutput(BaseModel):
+    """Structured long description fields used by the frontend renderer."""
+
+    description_title: str = Field(min_length=1)
+    specification: DescriptionSpecificationOutput = Field(
+        default_factory=DescriptionSpecificationOutput
+    )
+    features: list[str] = Field(min_length=1)
+
+
 class ListingCopyOutput(BaseModel):
     """Structured LLM output contract for generated Amazon listing copy."""
 
     title: str = Field(min_length=1)
     bullets: list[str] = Field(min_length=5, max_length=5)
-    description_text: str = Field(min_length=1)
+    description_fields: DescriptionFieldsOutput
     search_terms: list[str] = Field(default_factory=list)
     compliance_trace: ComplianceTraceOutput = Field(default_factory=ComplianceTraceOutput)
 
@@ -53,6 +74,16 @@ class ListingRewriteOutput(ListingCopyOutput):
     """Structured LLM output contract for rewritten Amazon listing copy."""
 
     change_summary: list[str] = Field(default_factory=list)
+
+
+DESCRIPTION_FIELDS_FORMAT = (
+    "Return the long description only as structured description_fields: "
+    "description_title, specification.brand, specification.name, "
+    "specification.color, specification.material, specification.size, "
+    "specification.applicable, and features as a list of strings. Do not put "
+    "HTML in description_fields. Leave unavailable specification values empty "
+    "instead of inventing facts."
+)
 
 
 class DraftService:
@@ -80,6 +111,7 @@ class DraftService:
             custom_prompt=custom_prompt,
         )
         generated = await self._generate_copy(session, prompt_context)
+        generated = prepare_generated_copy(generated)
         validation_result = validate_against_policy_pack(generated, policy_pack)
         repaired = False
         if not validation_result.passed:
@@ -89,6 +121,7 @@ class DraftService:
                 draft=generated,
                 validator_errors=validation_result.to_dict()["errors"],
             )
+            generated = prepare_generated_copy(generated)
             repaired = True
             validation_result = validate_against_policy_pack(generated, policy_pack)
         if validation_result.normalized_draft is not None:
@@ -149,6 +182,7 @@ class DraftService:
             instructions=instructions,
         )
         rewritten = await self._rewrite_copy(session, prompt_context)
+        rewritten = prepare_generated_copy(rewritten)
         validation_result = validate_against_policy_pack(rewritten, policy_pack)
         repaired = False
         if not validation_result.passed:
@@ -158,6 +192,7 @@ class DraftService:
                 draft=rewritten,
                 validator_errors=validation_result.to_dict()["errors"],
             )
+            rewritten = prepare_generated_copy(rewritten)
             repaired = True
             validation_result = validate_against_policy_pack(rewritten, policy_pack)
         if validation_result.normalized_draft is not None:
@@ -268,7 +303,8 @@ class DraftService:
                 "policy_pack is the mandatory source of truth for this generation. "
                 "policy_pack.field_rules contains the binding rules, not optional "
                 "references. Rules with level hard are non-negotiable. Apply each "
-                "field rule to its matching output field. Use only verified "
+                "field rule to its matching output field, and apply "
+                "description_text rules to description_fields. Use only verified "
                 "product_facts for factual claims. Competitor "
                 "analysis is strategy input only. Do not treat competitor facts as facts "
                 "about this product. Do not copy competitor wording. Do not invent "
@@ -276,6 +312,7 @@ class DraftService:
                 "claims. If user_custom_prompt conflicts with policy_pack, follow "
                 "policy_pack. Include compliance_trace with used rule IDs, applied "
                 "constraints, avoided terms, missing-fact handling, and assumptions. "
+                f"{DESCRIPTION_FIELDS_FORMAT} "
                 "Return structured output only."
             ),
         )
@@ -323,13 +360,15 @@ class DraftService:
                 "policy_pack is the mandatory source of truth for this rewrite. "
                 "policy_pack.field_rules contains the binding rules, not optional "
                 "references. Rules with level hard are non-negotiable. Apply each "
-                "field rule to its matching output field. Use only verified "
+                "field rule to its matching output field, and apply "
+                "description_text rules to description_fields. Use only verified "
                 "product_facts for factual claims. Competitor "
                 "analysis is strategy input only. Do not treat competitor facts as facts "
                 "about this product. Do not copy competitor wording. Do not invent "
                 "product facts, dimensions, materials, certifications, warranties, or "
                 "claims. If user_instructions conflicts with policy_pack, follow "
                 "policy_pack. "
+                f"{DESCRIPTION_FIELDS_FORMAT} "
                 "Return the final rewrite as structured output."
             ),
         )
@@ -378,6 +417,8 @@ class DraftService:
                 "issues listed in validator_errors. Do not add product facts, do not "
                 "change overall positioning, do not copy competitor wording, and do "
                 "not rewrite unrelated fields. policy_pack remains the source of truth. "
+                "Apply description_text rules to description_fields. "
+                f"{DESCRIPTION_FIELDS_FORMAT} "
                 "Return the full repaired listing copy as structured output."
             ),
         )
@@ -427,8 +468,11 @@ class DraftService:
                 "You repair rewritten Amazon US listing copy. Only fix the exact "
                 "fields and issues listed in validator_errors. Do not add product "
                 "facts, do not change unrelated fields, and do not copy competitor "
-                "wording. policy_pack remains the source of truth. Return the full "
-                "repaired rewrite as structured output, including change_summary."
+                "wording. policy_pack remains the source of truth. "
+                "Apply description_text rules to description_fields. "
+                f"{DESCRIPTION_FIELDS_FORMAT} "
+                "Return the full repaired rewrite as structured output, including "
+                "change_summary."
             ),
         )
         repair_context = {
@@ -505,6 +549,7 @@ def summarize_generation_context(
     return {
         "policy_pack": context["policy_pack"],
         "user_custom_prompt": context.get("user_custom_prompt"),
+        "description_fields": generated.get("description_fields"),
         "compliance_trace": generated.get("compliance_trace", {}),
         "rule_trace": build_policy_rule_trace(context["policy_pack"]),
         "competitor_strategy_trace": build_policy_competitor_trace(context["policy_pack"]),
@@ -532,6 +577,7 @@ def build_rewrite_context(
             "title": original_draft.title,
             "bullets": original_draft.bullets or [],
             "description_text": original_draft.description_text,
+            "description_fields": extract_description_fields(original_draft),
             "search_terms": original_draft.search_terms or [],
             "version_no": original_draft.version_no,
         },
@@ -552,8 +598,8 @@ def build_rewrite_context(
                 "Prefer targeted edits that address audit findings unless instructed otherwise."
             ),
             "output": (
-                "Return full title, five bullets, description_text as long description "
-                "HTML, search_terms, and change_summary."
+                "Return full title, five bullets, structured description_fields, "
+                "search_terms, and change_summary."
             ),
         },
     }
@@ -577,6 +623,7 @@ def summarize_rewrite_context(
             "change_summary": rewritten.get("change_summary", []),
         },
         "policy_pack": context["policy_pack"],
+        "description_fields": rewritten.get("description_fields"),
         "rule_trace": build_policy_rule_trace(context["policy_pack"]),
         "competitor_strategy_trace": build_policy_competitor_trace(context["policy_pack"]),
         "deterministic_validation": validation_result,
@@ -585,6 +632,113 @@ def summarize_rewrite_context(
             "max_attempts": 1,
         },
     }
+
+
+def prepare_generated_copy(value: dict[str, Any]) -> dict[str, Any]:
+    """Normalize structured description fields and compose legacy HTML text."""
+    if not isinstance(value, dict):
+        return value
+    normalized = dict(value)
+    description_fields = normalize_description_fields(
+        normalized.get("description_fields")
+    )
+    normalized["description_fields"] = description_fields
+    normalized["description_text"] = render_description_text(description_fields)
+    return normalized
+
+
+def normalize_description_fields(value: Any) -> dict[str, Any]:
+    """Return the stable frontend-facing long description field contract."""
+    source = value if isinstance(value, dict) else {}
+    specification = source.get("specification") if isinstance(source, dict) else {}
+    if not isinstance(specification, dict):
+        specification = {}
+    features = source.get("features") if isinstance(source, dict) else []
+    if not isinstance(features, list):
+        features = []
+    return {
+        "description_title": _clean_text(source.get("description_title")),
+        "specification": {
+            "brand": _clean_text(specification.get("brand")),
+            "name": _clean_text(specification.get("name")),
+            "color": _clean_text(specification.get("color")),
+            "material": _clean_text(specification.get("material")),
+            "size": _clean_text(specification.get("size")),
+            "applicable": _clean_text(specification.get("applicable")),
+        },
+        "features": [
+            _clean_feature_text(item)
+            for item in features
+            if _clean_feature_text(item)
+        ],
+    }
+
+
+def render_description_text(description_fields: dict[str, Any]) -> str:
+    """Compose Amazon long-description HTML from structured fields."""
+    fields = normalize_description_fields(description_fields)
+    specification = fields["specification"]
+    paragraphs = [
+        _paragraph(fields["description_title"]),
+        "<p><b>SPECIFICATION:</b></p>",
+        _paragraph(_specification_line("Brand", specification["brand"])),
+        _paragraph(_specification_line("Name", specification["name"])),
+        _paragraph(_specification_line("Color", specification["color"])),
+        _paragraph(_specification_line("Material", specification["material"])),
+    ]
+    if specification["size"]:
+        paragraphs.append(
+            _paragraph(f"<b>SIZE: </b>{_escape_html(specification['size'])}")
+        )
+    paragraphs.extend(
+        [
+            _paragraph(_specification_line("Applicable", specification["applicable"])),
+            "<p><b>FEATURES:</b></p>",
+        ]
+    )
+    paragraphs.extend(
+        _paragraph(f"-{feature.lstrip('-').strip()}")
+        for feature in fields["features"]
+    )
+    return "\n".join(item for item in paragraphs if item != "<p></p>")
+
+
+def extract_description_fields(draft: Draft) -> dict[str, Any] | None:
+    generation_context = (
+        draft.generation_context
+        if isinstance(draft.generation_context, dict)
+        else {}
+    )
+    description_fields = generation_context.get("description_fields")
+    if isinstance(description_fields, dict):
+        return normalize_description_fields(description_fields)
+    return None
+
+
+def _paragraph(value: str) -> str:
+    if "<b>" in value or "</b>" in value:
+        return f"<p>{value}</p>"
+    return f"<p>{_escape_html(value)}</p>"
+
+
+def _specification_line(label: str, value: str) -> str:
+    return f"{label}: {value}" if value else f"{label}: "
+
+
+def _clean_feature_text(value: Any) -> str:
+    return _clean_text(value).lstrip("-").strip()
+
+
+def _clean_text(value: Any) -> str:
+    return " ".join(str(value or "").split())
+
+
+def _escape_html(value: str) -> str:
+    return (
+        value.replace("&", "&amp;")
+        .replace("<", "&lt;")
+        .replace(">", "&gt;")
+    )
 
 
 def build_policy_rule_trace(policy_pack: dict[str, Any]) -> dict[str, Any]:
@@ -651,7 +805,13 @@ def validate_generated_copy(value: dict[str, Any]) -> None:
     """Validate the minimal draft contract before persisting."""
     if not isinstance(value, dict):
         raise DraftGenerationError("LLM response must be a JSON object")
-    required = ("title", "bullets", "description_text", "search_terms")
+    required = (
+        "title",
+        "bullets",
+        "description_fields",
+        "description_text",
+        "search_terms",
+    )
     missing = [field for field in required if field not in value]
     if missing:
         raise DraftGenerationError(f"LLM response missing fields: {', '.join(missing)}")
@@ -663,6 +823,8 @@ def validate_generated_copy(value: dict[str, Any]) -> None:
         raise DraftGenerationError("generated description_text is empty")
     if not _looks_like_description_html(value["description_text"]):
         raise DraftGenerationError("generated description_text must be paragraph HTML")
+    if not _looks_like_description_fields(value["description_fields"]):
+        raise DraftGenerationError("generated description_fields are invalid")
     if not _is_text_list(value["search_terms"]):
         raise DraftGenerationError("generated search_terms must be a list of strings")
 
@@ -690,3 +852,16 @@ def _looks_like_description_html(value: str) -> bool:
         "</p>",
     )
     return all(fragment in normalized for fragment in required_fragments)
+
+
+def _looks_like_description_fields(value: Any) -> bool:
+    if not isinstance(value, dict):
+        return False
+    if not isinstance(value.get("description_title"), str):
+        return False
+    if not value["description_title"].strip():
+        return False
+    if not isinstance(value.get("specification"), dict):
+        return False
+    features = value.get("features")
+    return _is_text_list(features)

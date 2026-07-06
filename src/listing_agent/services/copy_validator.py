@@ -54,6 +54,8 @@ class _DescriptionHTMLParser(HTMLParser):
 
 ALLOWED_DESCRIPTION_TAGS = {"p", "b"}
 BLOCKED_DESCRIPTION_TAGS = {"script", "style", "iframe"}
+SPECIFICATION_HEADING = "SPECIFICATION"
+FEATURES_HEADING = "FEATURES"
 
 
 def validate_against_policy_pack(
@@ -152,6 +154,94 @@ def _validate_description_html(value: Any, errors: list[ValidationIssue]) -> Non
                 "description_text",
                 "html_structure",
                 "Description must use paragraph HTML lines.",
+            )
+        )
+        return
+    _validate_description_section_structure(value, errors)
+
+
+def _validate_description_section_structure(
+    value: str,
+    errors: list[ValidationIssue],
+) -> None:
+    paragraphs = _paragraph_texts(value)
+    if not paragraphs:
+        return
+    if _has_raw_text_outside_paragraphs(value):
+        errors.append(
+            _issue(
+                "description_text",
+                "raw_text_outside_paragraphs",
+                "Description must not include raw text outside paragraph blocks.",
+            )
+        )
+    spec_index = _find_section_heading(paragraphs, SPECIFICATION_HEADING)
+    features_index = _find_section_heading(paragraphs, FEATURES_HEADING)
+    if spec_index is None:
+        errors.append(
+            _issue(
+                "description_text",
+                "missing_specification_section",
+                "Description must include <p><b>SPECIFICATION:</b></p>.",
+            )
+        )
+        return
+    if spec_index == 0:
+        errors.append(
+            _issue(
+                "description_text",
+                "missing_opening_paragraph",
+                "Description must start with an opening paragraph before SPECIFICATION.",
+            )
+        )
+    if features_index is None:
+        errors.append(
+            _issue(
+                "description_text",
+                "missing_features_section",
+                "Description must include <p><b>FEATURES:</b></p>.",
+            )
+        )
+        return
+    if features_index <= spec_index:
+        errors.append(
+            _issue(
+                "description_text",
+                "section_order",
+                "Description must place SPECIFICATION before FEATURES.",
+            )
+        )
+        return
+    specification_items = paragraphs[spec_index + 1 : features_index]
+    feature_items = paragraphs[features_index + 1 :]
+    if not specification_items:
+        errors.append(
+            _issue(
+                "description_text",
+                "empty_specification_section",
+                "Description must include specification paragraphs after SPECIFICATION.",
+            )
+        )
+    if not feature_items:
+        errors.append(
+            _issue(
+                "description_text",
+                "empty_features_section",
+                "Description must include feature paragraphs after FEATURES.",
+            )
+        )
+        return
+    invalid_features = [
+        item
+        for item in feature_items
+        if not item.lstrip().startswith("-")
+    ]
+    if invalid_features:
+        errors.append(
+            _issue(
+                "description_text",
+                "feature_paragraph_format",
+                "Each FEATURES paragraph must start with a hyphen.",
             )
         )
 
@@ -420,6 +510,8 @@ def _matching_terms(text: str, terms: list[str]) -> list[str]:
         if re.search(rf"(?<![a-z0-9]){re.escape(normalized)}(?![a-z0-9])", lowered):
             matches.append(term)
     return matches
+
+
 def _is_near_copy(value: str, source: str) -> bool:
     normalized_value = _normalize_space(value).lower()
     normalized_source = _normalize_space(source).lower()
@@ -457,6 +549,28 @@ def _feature_paragraphs(value: str) -> list[str]:
         if paragraph.strip().lower().rstrip(":") == "features":
             return paragraphs[index + 1 :]
     return []
+
+
+def _find_section_heading(paragraphs: list[str], heading: str) -> int | None:
+    normalized_heading = heading.strip().upper().rstrip(":")
+    for index, paragraph in enumerate(paragraphs):
+        if _normalize_heading(paragraph) == normalized_heading:
+            return index
+    return None
+
+
+def _normalize_heading(value: str) -> str:
+    return _normalize_space(value).strip().upper().rstrip(":")
+
+
+def _has_raw_text_outside_paragraphs(value: str) -> bool:
+    remainder = re.sub(
+        r"<p\b[^>]*>.*?</p>",
+        " ",
+        value,
+        flags=re.IGNORECASE | re.DOTALL,
+    )
+    return bool(_normalize_space(_strip_html(remainder)))
 
 
 def _paragraph_texts(value: str) -> list[str]:

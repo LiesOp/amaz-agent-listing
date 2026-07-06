@@ -23,9 +23,11 @@
 
       <section>
         <h3>长描述</h3>
-        <p v-if="draft.description_text" class="long-description-text">
-          {{ formatLongDescription(draft.description_text) }}
-        </p>
+        <p
+          v-if="draft.description_fields || draft.description_text"
+          class="long-description-text"
+          v-text="formatLongDescription(draft)"
+        />
         <p v-else>未返回长描述。</p>
       </section>
 
@@ -43,16 +45,56 @@
 <script setup lang="ts">
 import { computed } from 'vue'
 
+import type { DescriptionFieldsResponse, DraftResponse } from '../api/types'
 import { useWorkflowStore } from '../stores/workflow'
 
 const workflow = useWorkflowStore()
 const draft = computed(() => workflow.currentDraft)
 
-function formatLongDescription(value: string): string {
+function formatLongDescription(value: DraftResponse): string {
+  if (value.description_fields) {
+    return renderDescriptionFields(value.description_fields)
+  }
+  return formatDescriptionText(value.description_text || '')
+}
+
+function renderDescriptionFields(value: DescriptionFieldsResponse): string {
+  const specification = value.specification
+  const lines = [
+    paragraph(value.description_title),
+    '<p><b>SPECIFICATION:</b></p>',
+    paragraph(specificationLine('Brand', specification.brand)),
+    paragraph(specificationLine('Name', specification.name)),
+    paragraph(specificationLine('Color', specification.color)),
+    paragraph(specificationLine('Material', specification.material)),
+  ]
+  if (specification.size) {
+    lines.push(paragraph(`<b>SIZE: </b>${specification.size}`))
+  }
+  lines.push(
+    paragraph(specificationLine('Applicable', specification.applicable)),
+    '<p><b>FEATURES:</b></p>',
+    ...value.features.map((feature) => (
+      paragraph(`-${feature.replace(/^-+/, '').trim()}`)
+    )),
+  )
+  return lines.filter((line) => line !== '<p></p>').join('\n')
+}
+
+function paragraph(value: string): string {
+  return `<p>${value}</p>`
+}
+
+function specificationLine(label: string, value: string): string {
+  return value ? `${label}: ${value}` : `${label}: `
+}
+
+function formatDescriptionText(value: string): string {
   return value
     .replace(/\r?\n+/g, ' ')
     .replace(/\s+/g, ' ')
-    .replace(/\s*(<p>|&lt;p&gt;)/gi, '\n$1')
+    .replace(/\s*(<p\b[^>]*>|&lt;p(?:\s[^&]*)?&gt;)/gi, '\n$1')
+    .replace(/(<\/p>|&lt;\/p&gt;)\s*/gi, '$1\n')
     .trim()
 }
 

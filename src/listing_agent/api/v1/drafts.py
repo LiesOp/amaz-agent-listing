@@ -12,7 +12,11 @@ from listing_agent.schemas.draft import (
     DraftRewriteResponse,
 )
 from listing_agent.services.audits import AuditError, AuditService
-from listing_agent.services.drafts import DraftGenerationError, DraftService
+from listing_agent.services.drafts import (
+    DraftGenerationError,
+    DraftService,
+    extract_description_fields,
+)
 
 router = APIRouter(prefix="/drafts", tags=["drafts"])
 draft_service = DraftService()
@@ -27,6 +31,7 @@ def _to_draft_response(draft: Draft) -> DraftResponse:
         brief_id=draft.brief_id,
         title=draft.title,
         bullets=draft.bullets,
+        description_fields=extract_description_fields(draft),
         description_text=draft.description_text,
         search_terms=draft.search_terms,
         generation_context=draft.generation_context,

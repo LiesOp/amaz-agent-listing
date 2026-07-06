@@ -125,9 +125,11 @@
               <div class="long-description-field">
                 <dt>长描述</dt>
                 <dd>
-                  <pre v-if="draftAuditPage.draft.description_text" class="long-description-text">
-                    {{ formatLongDescription(draftAuditPage.draft.description_text) }}
-                  </pre>
+                  <pre
+                    v-if="draftAuditPage.draft.description_fields || draftAuditPage.draft.description_text"
+                    class="long-description-text"
+                    v-text="formatLongDescription(draftAuditPage.draft)"
+                  />
                   <span v-else class="muted">暂无</span>
                 </dd>
               </div>
@@ -209,7 +211,13 @@ import { computed, onActivated, ref, watch } from 'vue'
 import { RouterLink } from 'vue-router'
 
 import { getCopywritingDraftAudits, listCopywritingRecords } from '../api/copywriting'
-import type { CopywritingDraftAuditPageResponse, CopywritingRecordResponse, JsonObject } from '../api/types'
+import type {
+  CopywritingDraftAuditPageResponse,
+  CopywritingRecordResponse,
+  DescriptionFieldsResponse,
+  DraftResponse,
+  JsonObject,
+} from '../api/types'
 import { formatDateTime } from '../utils/datetime'
 
 const pageSize = 10
@@ -294,11 +302,50 @@ function listText(value?: unknown[] | null) {
   return items.length ? items.join(', ') : '暂无'
 }
 
-function formatLongDescription(value: string): string {
+function formatLongDescription(value: DraftResponse): string {
+  if (value.description_fields) {
+    return renderDescriptionFields(value.description_fields)
+  }
+  return formatDescriptionText(value.description_text || '')
+}
+
+function renderDescriptionFields(value: DescriptionFieldsResponse): string {
+  const specification = value.specification
+  const lines = [
+    paragraph(value.description_title),
+    '<p><b>SPECIFICATION:</b></p>',
+    paragraph(specificationLine('Brand', specification.brand)),
+    paragraph(specificationLine('Name', specification.name)),
+    paragraph(specificationLine('Color', specification.color)),
+    paragraph(specificationLine('Material', specification.material)),
+  ]
+  if (specification.size) {
+    lines.push(paragraph(`<b>SIZE: </b>${specification.size}`))
+  }
+  lines.push(
+    paragraph(specificationLine('Applicable', specification.applicable)),
+    '<p><b>FEATURES:</b></p>',
+    ...value.features.map((feature) => (
+      paragraph(`-${feature.replace(/^-+/, '').trim()}`)
+    )),
+  )
+  return lines.filter((line) => line !== '<p></p>').join('\n')
+}
+
+function paragraph(value: string): string {
+  return `<p>${value}</p>`
+}
+
+function specificationLine(label: string, value: string): string {
+  return value ? `${label}: ${value}` : `${label}: `
+}
+
+function formatDescriptionText(value: string): string {
   return value
     .replace(/\r?\n+/g, ' ')
     .replace(/\s+/g, ' ')
-    .replace(/\s*(<p>|&lt;p&gt;)/gi, '\n$1')
+    .replace(/\s*(<p\b[^>]*>|&lt;p(?:\s[^&]*)?&gt;)/gi, '\n$1')
+    .replace(/(<\/p>|&lt;\/p&gt;)\s*/gi, '$1\n')
     .trim()
 }
 

@@ -173,11 +173,27 @@ export interface DraftResponse {
   brief_id: string | null
   title: string | null
   bullets: string[] | null
+  description_fields: DescriptionFieldsResponse | null
   description_text: string | null
   search_terms: string[] | null
   generation_context: JsonObject | null
   version_no: number
   created_at: IsoDateTime
+}
+
+export interface DescriptionSpecificationResponse {
+  brand: string
+  name: string
+  color: string
+  material: string
+  size: string
+  applicable: string
+}
+
+export interface DescriptionFieldsResponse {
+  description_title: string
+  specification: DescriptionSpecificationResponse
+  features: string[]
 }
 
 export interface AuditResultResponse {
