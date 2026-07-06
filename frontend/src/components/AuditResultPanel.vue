@@ -34,25 +34,6 @@
         <p v-else class="muted">暂无建议。</p>
       </section>
 
-      <section>
-        <h3>Trace</h3>
-        <dl class="strategy-list">
-          <div>
-            <dt>Rules</dt>
-            <dd><pre class="trace-json">{{ formatTrace(auditResult.rule_trace) }}</pre></dd>
-          </div>
-          <div>
-            <dt>Competitor strategy</dt>
-            <dd>
-              <pre class="trace-json">{{ formatTrace(auditResult.competitor_strategy_trace) }}</pre>
-            </dd>
-          </div>
-          <div>
-            <dt>Validation</dt>
-            <dd><pre class="trace-json">{{ formatTrace(auditResult.validation_trace) }}</pre></dd>
-          </div>
-        </dl>
-      </section>
     </div>
 
     <p v-else class="muted">生成文案后会在这里展示审核结果。</p>
@@ -82,13 +63,6 @@ function formatFinding(finding: JsonObject) {
   return Object.entries(finding)
     .map(([key, value]) => `${key}: ${String(value)}`)
     .join(' - ')
-}
-
-function formatTrace(value: unknown) {
-  if (!value || typeof value !== 'object') {
-    return 'None'
-  }
-  return JSON.stringify(value, null, 2)
 }
 
 function audit() {

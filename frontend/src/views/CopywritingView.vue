@@ -181,24 +181,6 @@
                     </dd>
                   </div>
                   <div><dt>规则 ID</dt><dd>{{ listText(audit.used_rule_ids) }}</dd></div>
-                  <div>
-                    <dt>Rules trace</dt>
-                    <dd>
-                      <pre class="trace-json">{{ formatTrace(audit.rule_trace) }}</pre>
-                    </dd>
-                  </div>
-                  <div>
-                    <dt>Competitor trace</dt>
-                    <dd>
-                      <pre class="trace-json">{{ formatTrace(audit.competitor_strategy_trace) }}</pre>
-                    </dd>
-                  </div>
-                  <div>
-                    <dt>Validation trace</dt>
-                    <dd>
-                      <pre class="trace-json">{{ formatTrace(audit.validation_trace) }}</pre>
-                    </dd>
-                  </div>
                   <div><dt>审核时间</dt><dd>{{ formatDate(audit.created_at) }}</dd></div>
                 </dl>
               </article>

@@ -70,6 +70,21 @@ RISK_TERMS = [
     "number one",
     "#1",
 ]
+ACTION_BRIEF_LIMITS = {
+    "title_plan": 3,
+    "bullet_plan": 5,
+    "description_plan": 3,
+    "keywords_to_use": 15,
+    "search_terms": 15,
+    "differentiators": 5,
+    "must_cover": 8,
+}
+CONSTRAINT_LIMITS = {
+    "avoid_terms": 15,
+    "avoid_claim_types": 15,
+    "do_not_infer": 10,
+    "requires_user_evidence": 10,
+}
 
 
 @dataclass(slots=True)
@@ -1444,7 +1459,10 @@ def build_aggregation_system_prompt() -> str:
         "facts about the user's product. Mark missing user facts that require "
         "confirmation. Return the required structured package with three sections: "
         "report for human review, action_brief for the generation agent, and "
-        "constraints for hard safety limits."
+        "constraints for hard safety limits. Keep action_brief concise: at most "
+        "3 title_plan items, 5 bullet_plan items, 3 description_plan items, "
+        "20 keywords_to_use, 15 search_terms, 5 differentiators, and 8 must_cover "
+        "items. Keep each constraints list to the most important 15 items or fewer."
     )
 
 
@@ -1460,16 +1478,22 @@ def normalize_aggregated_competitor_package(
     fallback_package = build_competitor_analysis_package_from_report(normalized_report)
     action_brief = package.get("action_brief")
     constraints = package.get("constraints")
-    return {
-        "report": normalized_report,
-        "action_brief": fill_empty_values(
+    normalized_action_brief = limit_action_brief(
+        fill_empty_values(
             action_brief if isinstance(action_brief, dict) else {},
             fallback_package["action_brief"],
-        ),
-        "constraints": fill_empty_values(
+        )
+    )
+    normalized_constraints = limit_competitor_constraints(
+        fill_empty_values(
             constraints if isinstance(constraints, dict) else {},
             fallback_package["constraints"],
-        ),
+        )
+    )
+    return {
+        "report": normalized_report,
+        "action_brief": normalized_action_brief,
+        "constraints": normalized_constraints,
     }
 
 
@@ -1493,28 +1517,49 @@ def build_competitor_analysis_package_from_report(report: dict[str, Any]) -> dic
     risk_summary = flatten_text_values(report.get("risk_summary") or [])
     risk_terms = flatten_text_values(keyword_insights.get("risk_terms") or [])
     missing_user_facts = flatten_text_values(report.get("missing_user_facts") or [])
+    action_brief = {
+        "positioning": strategy.get("positioning"),
+        "title_plan": strategy.get("title_strategy") or [],
+        "bullet_plan": strategy.get("bullet_strategy") or [],
+        "description_plan": strategy.get("description_strategy") or [],
+        "keywords_to_use": flatten_text_values(keyword_insights.get("primary") or [])
+        + flatten_text_values(keyword_insights.get("long_tail") or []),
+        "search_terms": strategy.get("keyword_strategy") or [],
+        "differentiators": report.get("differentiation_opportunities") or [],
+        "must_cover": flatten_text_values(market_patterns.get("common_features") or [])
+        + flatten_text_values(market_patterns.get("common_benefits") or []),
+    }
+    constraints = {
+        "avoid_terms": dedupe_text(risk_summary + risk_terms),
+        "avoid_claim_types": strategy.get("avoid_strategy") or [],
+        "do_not_infer": missing_user_facts,
+        "requires_user_evidence": missing_user_facts,
+        "competitor_copy_policy": "do_not_copy",
+    }
     return {
         "report": report,
-        "action_brief": {
-            "positioning": strategy.get("positioning"),
-            "title_plan": strategy.get("title_strategy") or [],
-            "bullet_plan": strategy.get("bullet_strategy") or [],
-            "description_plan": strategy.get("description_strategy") or [],
-            "keywords_to_use": flatten_text_values(keyword_insights.get("primary") or [])
-            + flatten_text_values(keyword_insights.get("long_tail") or []),
-            "search_terms": strategy.get("keyword_strategy") or [],
-            "differentiators": report.get("differentiation_opportunities") or [],
-            "must_cover": flatten_text_values(market_patterns.get("common_features") or [])
-            + flatten_text_values(market_patterns.get("common_benefits") or []),
-        },
-        "constraints": {
-            "avoid_terms": dedupe_text(risk_summary + risk_terms),
-            "avoid_claim_types": strategy.get("avoid_strategy") or [],
-            "do_not_infer": missing_user_facts,
-            "requires_user_evidence": missing_user_facts,
-            "competitor_copy_policy": "do_not_copy",
-        },
+        "action_brief": limit_action_brief(action_brief),
+        "constraints": limit_competitor_constraints(constraints),
     }
+
+
+def limit_action_brief(action_brief: dict[str, Any]) -> dict[str, Any]:
+    """Keep competitor strategy compact enough for copy generation."""
+    limited = dict(action_brief)
+    for field, limit in ACTION_BRIEF_LIMITS.items():
+        limited[field] = dedupe_text(flatten_text_values(limited.get(field)))[:limit]
+    return limited
+
+
+def limit_competitor_constraints(constraints: dict[str, Any]) -> dict[str, Any]:
+    """Keep competitor-derived safety limits focused on the highest-signal items."""
+    limited = dict(constraints)
+    for field, limit in CONSTRAINT_LIMITS.items():
+        limited[field] = dedupe_text(flatten_text_values(limited.get(field)))[:limit]
+    limited["competitor_copy_policy"] = (
+        constraints.get("competitor_copy_policy") or "do_not_copy"
+    )
+    return limited
 
 
 def validate_competitor_analysis_package(package: dict[str, Any]) -> None:

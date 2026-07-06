@@ -5,6 +5,22 @@ from sqlalchemy.ext.asyncio import AsyncSession
 
 from listing_agent.models.v1_data import CompetitorAnalysis, ProductBrief, Rule
 
+ACTION_BRIEF_LIMITS = {
+    "title_plan": 3,
+    "bullet_plan": 5,
+    "description_plan": 3,
+    "keywords_to_use": 20,
+    "search_terms": 15,
+    "differentiators": 5,
+    "must_cover": 8,
+}
+CONSTRAINT_LIMITS = {
+    "avoid_terms": 15,
+    "avoid_claim_types": 15,
+    "do_not_infer": 10,
+    "requires_user_evidence": 10,
+}
+
 
 def product_facts_from_brief(brief: ProductBrief) -> dict[str, Any]:
     """Return verified product facts that may be used as copy source of truth."""
@@ -42,6 +58,8 @@ async def build_policy_pack(
         if competitor_analysis is not None and isinstance(competitor_analysis.constraints, dict)
         else {}
     )
+    action_brief = _limit_action_brief(action_brief)
+    constraints = _limit_competitor_constraints(constraints)
     missing_facts = _missing_facts(brief, constraints)
     avoid_terms = _dedupe_text(
         _flatten_text(constraints.get("avoid_terms"))
@@ -56,7 +74,9 @@ async def build_policy_pack(
         "field_rules": _build_field_rules(rules),
         "keyword_plan": {
             "must_use": _dedupe_text(keywords_seed),
-            "nice_to_have": _dedupe_text(competitor_keywords),
+            "nice_to_have": _dedupe_text(competitor_keywords)[
+                : ACTION_BRIEF_LIMITS["keywords_to_use"]
+            ],
             "avoid": avoid_terms,
         },
         "claims_policy": {
@@ -190,6 +210,23 @@ def _missing_facts(brief: ProductBrief, constraints: dict[str, Any]) -> list[str
     for value in _flatten_text(constraints.get("do_not_infer")):
         missing.append(value)
     return _dedupe_text(missing)
+
+
+def _limit_action_brief(action_brief: dict[str, Any]) -> dict[str, Any]:
+    limited = dict(action_brief)
+    for field, limit in ACTION_BRIEF_LIMITS.items():
+        limited[field] = _dedupe_text(_flatten_text(limited.get(field)))[:limit]
+    return limited
+
+
+def _limit_competitor_constraints(constraints: dict[str, Any]) -> dict[str, Any]:
+    limited = dict(constraints)
+    for field, limit in CONSTRAINT_LIMITS.items():
+        limited[field] = _dedupe_text(_flatten_text(limited.get(field)))[:limit]
+    limited["competitor_copy_policy"] = (
+        constraints.get("competitor_copy_policy") or "do_not_copy"
+    )
+    return limited
 
 
 def _flatten_text(value: Any) -> list[str]:
